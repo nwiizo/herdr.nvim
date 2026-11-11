@@ -31,21 +31,24 @@ jobs:
             const tag = upstream.data.tag_name;
             const latest = tag.replace(/^v/, "");
             const verified = process.env.VERIFIED_HERDR_VERSION;
-            core.info(`Latest Herdr: ${latest}; verified by Signalbox: ${verified}`);
+            core.info(`Latest Herdr: ${latest}; verified by herdr.nvim: ${verified}`);
 
             if (latest === verified) {
-              core.info("Signalbox is verified against the latest Herdr release.");
+              core.info("herdr.nvim is verified against the latest Herdr release.");
               return;
             }
 
-            const marker = `<!-- signalbox-herdr-release:${tag} -->`;
+            const marker = `<!-- herdr-nvim-herdr-release:${tag} -->`;
+            // Existing audit issues keep the marker written before the rename.
+            const legacyMarker = `<!-- signalbox-herdr-release:${tag} -->`;
             const issues = await github.paginate(github.rest.issues.listForRepo, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               state: "all",
               per_page: 100,
             });
-            const existing = issues.find((issue) => issue.body && issue.body.includes(marker));
+            const existing = issues.find((issue) => issue.body &&
+              (issue.body.includes(marker) || issue.body.includes(legacyMarker)));
             if (existing) {
               if (existing.state === "closed") {
                 await github.rest.issues.update({
@@ -74,12 +77,12 @@ jobs:
               title: `[upstream] Audit Herdr ${tag} compatibility`,
               body: `${marker}\n` +
                 `A new stable Herdr release is available: [${tag}](${releaseUrl}).\n\n` +
-                `Signalbox is currently verified against **${verified}**.\n\n` +
+                `herdr.nvim is currently verified against **${verified}**.\n\n` +
                 `## Compatibility checklist\n\n` +
                 `- [ ] Review upstream release notes and socket/API changes\n` +
                 `- [ ] Compare \`api snapshot\`, \`agent prompt --wait\`, agent read sources, \`agent explain\`, \`agent rename\`, and \`server agent-manifests\` contracts\n` +
                 `- [ ] Run \`make check\` with Herdr ${tag}\n` +
                 `- [ ] Run the real snapshot, idle/active preview, explain, rename, board, start, prompt-stall recovery, attach, manifest-health, and cleanup smoke tests\n` +
-                `- [ ] Update the verified version in \`lua/signalbox/compatibility.lua\`, README, \`docs/upstream-herdr.md\`, and this workflow\n` +
+                `- [ ] Update the verified version in \`lua/herdr/compatibility.lua\`, README, \`docs/upstream-herdr.md\`, and this workflow\n` +
                 `- [ ] Record any migration or compatibility shim in \`docs/upstream-herdr.md\`\n`,
             });

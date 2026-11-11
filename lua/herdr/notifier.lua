@@ -1,4 +1,4 @@
-local config = require("signalbox.config")
+local config = require("herdr.config")
 
 local M = {}
 
@@ -10,15 +10,15 @@ local function attention_is_visible(event)
   if visibility_probe then
     return visibility_probe(event)
   end
-  local ok, board = pcall(require, "signalbox.board")
+  local ok, board = pcall(require, "herdr.board")
   if ok and board.is_visible() then
     return true
   end
   local buffer = vim.api.nvim_get_current_buf()
-  if vim.b[buffer].signalbox_terminal_id ~= event.terminal_id then
+  if vim.b[buffer].herdr_terminal_id ~= event.terminal_id then
     return false
   end
-  local terminal_ok, terminal = pcall(require, "signalbox.terminal")
+  local terminal_ok, terminal = pcall(require, "herdr.terminal")
   return terminal_ok and terminal.is_attached(event.terminal_id, buffer)
 end
 
@@ -42,7 +42,7 @@ function M.on_transition(event)
   end
   local level = event.status == "blocked" and vim.log.levels.WARN or vim.log.levels.INFO
   local deliver = notify or vim.notify
-  deliver(message, level, { title = "Signalbox" })
+  deliver(message, level, { title = "Herdr" })
 end
 
 function M._set_notify(value)

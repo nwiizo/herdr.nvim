@@ -1,6 +1,6 @@
 local h = require("tests.harness")
-local config = require("signalbox.config")
-local state = require("signalbox.state")
+local config = require("herdr.config")
+local state = require("herdr.state")
 
 local function agent(id, status, workspace, revision, cwd)
   return {
@@ -47,7 +47,7 @@ h.test("state bootstraps without a transition notification", function()
   end)
   state._accept(snapshot({ agent("a", "blocked") }))
   h.eq({}, transitions)
-  h.eq({ "SignalboxUpdated" }, events)
+  h.eq({ "HerdrUpdated" }, events)
 end)
 
 h.test("state emits transitions for changes and newly observed attention states", function()
@@ -240,12 +240,12 @@ h.test("state notifies only once when the Herdr executable is missing", function
   state._fail({ kind = "executable", message = "ENOENT" }, { stop = true })
   vim.notify = original_notify
   h.eq(1, #notifications)
-  h.contains(notifications[1], "https://herdr.dev/")
+  h.contains(notifications[1], "https://herdr.dev/tui/")
 end)
 
 h.test("state keeps polling after a transient snapshot failure and recovers", function()
   reset()
-  local client = require("signalbox.client")
+  local client = require("herdr.client")
   local original_ensure = client.ensure_server
   local original_snapshot = client.snapshot
   local snapshot_calls = 0
@@ -292,7 +292,7 @@ end)
 
 h.test("state ignores callbacks from a reset lifecycle", function()
   reset()
-  local client = require("signalbox.client")
+  local client = require("herdr.client")
   local original_ensure = client.ensure_server
   local original_snapshot = client.snapshot
   local ensure_callback
@@ -314,9 +314,54 @@ h.test("state ignores callbacks from a reset lifecycle", function()
   client.snapshot = original_snapshot
 end)
 
+h.test("state retries a temporary server outage and recovers without manual refresh", function()
+  reset()
+  local client = require("herdr.client")
+  local original_ensure, original_snapshot = client.ensure_server, client.snapshot
+  h.defer(function()
+    client.ensure_server, client.snapshot = original_ensure, original_snapshot
+    state._reset()
+  end)
+  local online = false
+  client.ensure_server = function(callback)
+    callback(online, not online and { kind = "server", message = "restarting" } or nil)
+  end
+  client.snapshot = function(callback)
+    callback(snapshot({ agent("recovered", "working") }))
+  end
+  local tick
+  state._set_timer_factory(function()
+    return {
+      is_closing = function()
+        return false
+      end,
+      start = function(_, _, _, callback)
+        tick = callback
+      end,
+      stop = function() end,
+      close = function() end,
+    }
+  end)
+  state.start()
+  h.eq(true, state.get().polling)
+  h.truthy(tick)
+  online = true
+  tick()
+  h.truthy(vim.wait(1000, function()
+    return state.agent("recovered") ~= nil
+  end))
+  h.eq(nil, state.get().error)
+  h.eq(true, state.get().polling)
+  client.ensure_server = function(callback)
+    callback(false, { kind = "protocol", message = "unsupported" })
+  end
+  state.refresh()
+  h.eq(false, state.get().polling)
+end)
+
 h.test("state switches polling interval while the board is visible", function()
   reset()
-  local client = require("signalbox.client")
+  local client = require("herdr.client")
   local original_ensure = client.ensure_server
   local original_snapshot = client.snapshot
   client.ensure_server = function(callback)

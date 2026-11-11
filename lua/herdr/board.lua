@@ -1,5 +1,5 @@
-local config = require("signalbox.config")
-local state = require("signalbox.state")
+local config = require("herdr.config")
+local state = require("herdr.state")
 
 local M = {}
 
@@ -17,19 +17,20 @@ local preview_target
 local preview_in_flight
 local preview_last_read = 0
 local preview_cache = {}
+local paused_preview
 local closing_windows = false
 local origin_root
 local augroup
-local namespace = vim.api.nvim_create_namespace("signalbox-board")
+local namespace = vim.api.nvim_create_namespace("herdr-board")
 -- Stay below Snacks layout 30, picker preview 40, and the default modal layer 50.
 local board_zindex = 25
 
 local highlight_for = {
-  blocked = "SignalboxBlocked",
-  working = "SignalboxWorking",
-  done = "SignalboxDone",
-  idle = "SignalboxIdle",
-  unknown = "SignalboxUnknown",
+  blocked = "HerdrBlocked",
+  working = "HerdrWorking",
+  done = "HerdrDone",
+  idle = "HerdrIdle",
+  unknown = "HerdrUnknown",
 }
 
 local function valid_buffer(buffer)
@@ -136,16 +137,16 @@ end
 local function summary_title()
   local counts = state.counts()
   local markers = config.get().board.markers
-  local parts = { { " [1]-Signalbox ", "SignalboxTitle" } }
+  local parts = { { " [1]-Herdr ", "HerdrTitle" } }
   for _, key in ipairs({ "blocked", "working", "done" }) do
     if counts[key] > 0 then
       table.insert(parts, { " " .. markers[key] .. counts[key] .. " ", highlight_for[key] })
     end
   end
   if state.get().stale then
-    table.insert(parts, { " ~stale ", "SignalboxUnknown" })
+    table.insert(parts, { " ~stale ", "HerdrUnknown" })
   end
-  table.insert(parts, { " ? guide ", "SignalboxMuted" })
+  table.insert(parts, { " ? guide ", "HerdrMuted" })
   return parts
 end
 
@@ -186,26 +187,27 @@ local function set_title(window, title)
 end
 
 local function preview_title(agent, suffix_group)
-  local hint = preview_mode == "explain" and "· detection · e output · i attach · ? guide "
-    or "· read-only · e explain · i attach · ? guide "
+  local hint = paused_preview and "· paused · P resume · i attach · ? guide "
+    or preview_mode == "explain" and "· detection · e output · i attach · ? guide "
+    or "· read-only · P pause · e explain · i attach · ? guide "
   return {
-    { " [2]-Preview ", "SignalboxTitle" },
+    { " [2]-Preview ", "HerdrTitle" },
     { "· " .. agent.name .. " ", highlight_for[agent.status] },
-    { hint, suffix_group or "SignalboxMuted" },
+    { hint, suffix_group or "HerdrMuted" },
   }
 end
 
 local function empty_preview_title()
   return {
-    { " [2]-Preview ", "SignalboxTitle" },
-    { "· read-only · select agent · i attach · ? guide ", "SignalboxMuted" },
+    { " [2]-Preview ", "HerdrTitle" },
+    { "· read-only · select agent · i attach · ? guide ", "HerdrMuted" },
   }
 end
 
 local function guide_title()
   return {
-    { " [2]-Preview ", "SignalboxTitle" },
-    { "· guide · input → result · ? close ", "SignalboxMuted" },
+    { " [2]-Preview ", "HerdrTitle" },
+    { "· guide · input → result · ? close ", "HerdrMuted" },
   }
 end
 
@@ -228,7 +230,7 @@ local function guide_content(width)
     { heading = "ATTACHED TERMINAL — INPUT MODE" },
     { key = config.get().terminal.return_key, result = "Detach and select the same agent; agent keeps running." },
     { key = "PgUp/PgDn", result = "Scroll Herdr history; typing returns to the bottom." },
-    { key = "<C-b> q", result = "Herdr native detach; return to Signalbox." },
+    { key = "<C-b> q", result = "Herdr native detach; return to Herdr." },
     { key = "<C-b> twice", result = "Send a literal Ctrl-b to the agent." },
     { key = "<C-\\><C-n>", result = "Neovim Normal mode to select/copy; i resumes input." },
     { heading = "NEW WORK" },
@@ -237,23 +239,24 @@ local function guide_content(width)
     { heading = "VIEW AND TOOLS" },
     { key = "A", result = "Attention view ↔ all agents." },
     { key = "v", result = "Show / hide output preview." },
+    { key = "P", result = "Pause / resume output for reading and copying; agent keeps running." },
     { key = "g / d", result = "Lazygit / Diffview at agent repo." },
     { key = "r", result = "Refresh Herdr state." },
-    { key = "? / q", result = "Close guide / close Signalbox." },
+    { key = "? / q", result = "Close guide / close Herdr." },
   }
   local lines = { "INPUT → RESULT" }
-  local highlights = { { line = 1, group = "SignalboxGuideHeader", start_col = 0, end_col = -1 } }
+  local highlights = { { line = 1, group = "HerdrGuideHeader", start_col = 0, end_col = -1 } }
   local wide = width >= 40
   for _, entry in ipairs(entries) do
     if entry.heading then
       table.insert(lines, entry.heading)
-      table.insert(highlights, { line = #lines, group = "SignalboxGuideHeader", start_col = 0, end_col = -1 })
+      table.insert(highlights, { line = #lines, group = "HerdrGuideHeader", start_col = 0, end_col = -1 })
     elseif wide then
       table.insert(lines, string.format("%-10s %s", entry.key, entry.result))
-      table.insert(highlights, { line = #lines, group = "SignalboxGuideKey", start_col = 0, end_col = #entry.key })
+      table.insert(highlights, { line = #lines, group = "HerdrGuideKey", start_col = 0, end_col = #entry.key })
     else
       table.insert(lines, entry.key)
-      table.insert(highlights, { line = #lines, group = "SignalboxGuideKey", start_col = 0, end_col = -1 })
+      table.insert(highlights, { line = #lines, group = "HerdrGuideKey", start_col = 0, end_col = -1 })
       table.insert(lines, "  " .. entry.result)
     end
   end
@@ -296,6 +299,7 @@ function M.refresh_preview(opts)
   vim.api.nvim_buf_clear_namespace(preview_buffer, namespace, 0, -1)
   local agent = selected_agent()
   if not agent then
+    paused_preview = nil
     if preview_target ~= false then
       preview_generation = preview_generation + 1
       preview_target = false
@@ -312,6 +316,13 @@ function M.refresh_preview(opts)
   end
   local target = agent.terminal_id
   local cache_key = preview_mode .. ":" .. target
+  if paused_preview == cache_key then
+    preview_target = cache_key
+    preview_message(preview_cache[cache_key])
+    set_title(preview_window, preview_title(agent))
+    return
+  end
+  paused_preview = nil
   local changed = preview_target ~= cache_key
   local now = vim.uv.now()
   local throttle_ms = math.max(500, config.get().refresh.board_ms)
@@ -341,7 +352,7 @@ function M.refresh_preview(opts)
         local label = preview_mode == "explain" and "Explanation unavailable" or "Preview unavailable"
         preview_message({ label, "", err.message or err.kind or tostring(err) })
       end
-      set_title(preview_window, preview_title(agent, "SignalboxUnknown"))
+      set_title(preview_window, preview_title(agent, "HerdrUnknown"))
       return
     end
     local lines = vim.split((output or ""):gsub("%s+$", ""), "\n", { plain = true })
@@ -353,23 +364,23 @@ function M.refresh_preview(opts)
     set_title(preview_window, preview_title(agent))
   end
   if preview_mode == "explain" then
-    require("signalbox.client").explain(agent.target, callback)
+    require("herdr.client").explain(agent.target, callback)
   else
-    require("signalbox.client").read(agent.target, config.get().board.preview_lines, callback)
+    require("herdr.client").read(agent.target, config.get().board.preview_lines, callback)
   end
 end
 
 local function render_guidance(lines, err)
   if err.kind == "executable" then
-    table.insert(lines, "Install Herdr: https://herdr.dev/")
-    table.insert(lines, "Run :checkhealth signalbox")
+    table.insert(lines, "Install Herdr TUI: https://herdr.dev/tui/")
+    table.insert(lines, "Run :checkhealth herdr")
   elseif err.kind == "server" then
     table.insert(lines, "Run: " .. config.get().herdr_cmd .. " server")
     table.insert(lines, "Press r to retry")
   elseif err.kind == "protocol" then
-    table.insert(lines, "Update Herdr, then run :SignalboxHealth")
+    table.insert(lines, "Update Herdr, then run :HerdrHealth")
   else
-    table.insert(lines, "Press r to retry; run :SignalboxHealth")
+    table.insert(lines, "Press r to retry; run :HerdrHealth")
   end
 end
 
@@ -400,18 +411,18 @@ function M.render(preferred_id)
   local width = valid_window(list_window) and vim.api.nvim_win_get_width(list_window) or 44
   local view_label = show_all and "all agents" or "this project + attention elsewhere"
   local lines = { truncate(" " .. view_label, width - 1), "" }
-  local highlights = { [1] = "SignalboxMuted" }
+  local highlights = { [1] = "HerdrMuted" }
   line_agents = {}
 
   if not status.snapshot then
     if status.error then
       table.insert(lines, "Herdr unavailable")
-      highlights[#lines] = "SignalboxBlocked"
+      highlights[#lines] = "HerdrBlocked"
       table.insert(lines, truncate(status.error.message or "unknown error", width - 2))
       render_guidance(lines, status.error)
     else
       table.insert(lines, "Loading Herdr agents…")
-      highlights[#lines] = "SignalboxWorking"
+      highlights[#lines] = "HerdrWorking"
     end
   else
     if status.stale and status.error then
@@ -434,7 +445,7 @@ function M.render(preferred_id)
       end
       if hidden_working > 0 then
         lines[2] = truncate(string.format(" A: %d working elsewhere", hidden_working), width - 1)
-        highlights[2] = "SignalboxWorking"
+        highlights[2] = "HerdrWorking"
       end
     end
     if #groups == 0 then
@@ -444,7 +455,7 @@ function M.render(preferred_id)
     end
     for _, group in ipairs(groups) do
       table.insert(lines, truncate(group.label, width - 2))
-      highlights[#lines] = "SignalboxWorkspace"
+      highlights[#lines] = "HerdrWorkspace"
       for _, agent in ipairs(group.agents) do
         local marker = config.get().board.markers[agent.status]
         local line = agent_line(agent, marker, width)
@@ -514,7 +525,7 @@ end
 local function require_agent_row()
   local agent = selected_agent()
   if not agent then
-    vim.notify("Select an agent row first", vim.log.levels.INFO, { title = "Signalbox" })
+    vim.notify("Select an agent row first", vim.log.levels.INFO, { title = "Herdr" })
   end
   return agent
 end
@@ -522,21 +533,21 @@ end
 local function attach_selected()
   local agent = require_agent_row()
   if agent then
-    require("signalbox").attach(agent.terminal_id)
+    require("herdr").attach(agent.terminal_id)
   end
 end
 
 local function prompt_selected()
   local agent = require_agent_row()
   if agent then
-    require("signalbox").prompt(agent.terminal_id)
+    require("herdr").prompt(agent.terminal_id)
   end
 end
 
 local function rename_selected()
   local agent = require_agent_row()
   if agent then
-    require("signalbox").rename(agent.terminal_id)
+    require("herdr").rename(agent.terminal_id)
   end
 end
 
@@ -546,7 +557,7 @@ local function acknowledge_selected()
     return
   end
   if not state.acknowledge(agent.terminal_id) then
-    vim.notify("Select a completed agent with fresh state first", vim.log.levels.INFO, { title = "Signalbox" })
+    vim.notify("Select a completed agent with fresh state first", vim.log.levels.INFO, { title = "Herdr" })
     return
   end
   M.render()
@@ -557,6 +568,25 @@ local function toggle_explanation()
     return
   end
   preview_mode = preview_mode == "explain" and "output" or "explain"
+  paused_preview = nil
+  preview_target = nil
+  M.refresh_preview({ force = true })
+end
+
+local function toggle_preview_pause()
+  local agent = require_agent_row()
+  if not agent then
+    return
+  end
+  local cache_key = "output:" .. agent.terminal_id
+  if help_visible or not valid_window(preview_window) or preview_mode ~= "output" or not preview_cache[cache_key] then
+    vim.notify("Show the agent's output preview before pausing it", vim.log.levels.INFO, { title = "Herdr" })
+    return
+  end
+  paused_preview = paused_preview ~= cache_key and cache_key or nil
+  -- A response already in flight must not replace the text being copied.
+  preview_generation = preview_generation + 1
+  preview_in_flight = nil
   preview_target = nil
   M.refresh_preview({ force = true })
 end
@@ -581,7 +611,7 @@ local function configure_buffer(buffer, filetype, name)
   vim.bo[buffer].modifiable = false
   vim.bo[buffer].filetype = filetype
   vim.bo[buffer].buflisted = false
-  pcall(vim.api.nvim_buf_set_name, buffer, "signalbox://" .. name)
+  pcall(vim.api.nvim_buf_set_name, buffer, "herdr://" .. name)
   local function map(lhs, callback, description)
     vim.keymap.set("n", lhs, callback, { buffer = buffer, silent = true, nowait = true, desc = description })
   end
@@ -593,21 +623,22 @@ local function configure_buffer(buffer, filetype, name)
   map("n", rename_selected, "Rename agent")
   map("x", acknowledge_selected, "Acknowledge completion")
   map("e", toggle_explanation, "Toggle agent state explanation")
+  map("P", toggle_preview_pause, "Pause or resume output preview")
   map("a", function()
-    require("signalbox").start(nil, { cwd = origin_root })
+    require("herdr").start(nil, { cwd = origin_root })
   end, "Start agent")
   map("R", function()
-    require("signalbox").resume(nil, { cwd = origin_root })
+    require("herdr").resume(nil, { cwd = origin_root })
   end, "Resume conversation in Herdr")
   map("g", function()
     local agent = selected_agent()
     M.close()
-    require("signalbox.actions").lazygit(agent, origin_root)
+    require("herdr.actions").lazygit(agent, origin_root)
   end, "Open Lazygit")
   map("d", function()
     local agent = selected_agent()
     M.close()
-    require("signalbox.actions").diffview(agent, origin_root)
+    require("herdr.actions").diffview(agent, origin_root)
   end, "Open Diffview")
   map("v", function()
     preview_enabled = not preview_enabled
@@ -618,9 +649,9 @@ local function configure_buffer(buffer, filetype, name)
     M.render()
   end, "Toggle all agents")
   map("r", function()
-    require("signalbox").refresh()
+    require("herdr").refresh()
   end, "Refresh agents")
-  map("q", M.close, "Close Signalbox")
+  map("q", M.close, "Close Herdr")
   map("?", toggle_help, "Toggle input guide")
   map("1", focus_list_window, "Focus agent list")
   map("2", focus_preview_window, "Focus right pane")
@@ -662,8 +693,8 @@ local function open_windows()
   vim.wo[list_window].signcolumn = "no"
   vim.wo[list_window].winhighlight = table.concat({
     "Normal:NormalFloat",
-    "FloatBorder:SignalboxBorder",
-    "FloatTitle:SignalboxTitle",
+    "FloatBorder:HerdrBorder",
+    "FloatTitle:HerdrTitle",
     "CursorLine:CursorLine",
   }, ",")
 
@@ -684,8 +715,8 @@ local function open_windows()
     vim.wo[preview_window].signcolumn = "no"
     vim.wo[preview_window].winhighlight = table.concat({
       "Normal:NormalFloat",
-      "FloatBorder:SignalboxBorder",
-      "FloatTitle:SignalboxTitle",
+      "FloatBorder:HerdrBorder",
+      "FloatTitle:HerdrTitle",
     }, ",")
   else
     preview_window = nil
@@ -740,18 +771,18 @@ function M.open(opts)
   if M.is_open() then
     vim.api.nvim_set_current_win(list_window)
   else
-    origin_root = require("signalbox.context").project_root(0)
+    origin_root = require("herdr.context").project_root(0)
     preview_enabled = config.get().board.preview
     help_visible = false
     preview_mode = "output"
     preview_target = nil
     if not valid_buffer(list_buffer) then
       list_buffer = vim.api.nvim_create_buf(false, true)
-      configure_buffer(list_buffer, "signalbox", "board")
+      configure_buffer(list_buffer, "herdr", "board")
     end
     if not valid_buffer(preview_buffer) then
       preview_buffer = vim.api.nvim_create_buf(false, true)
-      configure_buffer(preview_buffer, "signalbox-preview", "preview")
+      configure_buffer(preview_buffer, "herdr-preview", "preview")
     end
     open_windows()
     state.set_board_visible(true)
@@ -764,6 +795,7 @@ function M.open(opts)
 end
 
 function M.close()
+  paused_preview = nil
   preview_generation = preview_generation + 1
   preview_target = nil
   preview_in_flight = nil
@@ -789,29 +821,29 @@ function M.toggle()
 end
 
 local function apply_highlights()
-  vim.api.nvim_set_hl(0, "SignalboxBlocked", { link = "ErrorMsg" })
-  vim.api.nvim_set_hl(0, "SignalboxWorking", { link = "Function" })
-  vim.api.nvim_set_hl(0, "SignalboxDone", { link = "String" })
-  vim.api.nvim_set_hl(0, "SignalboxIdle", { link = "Comment" })
-  vim.api.nvim_set_hl(0, "SignalboxUnknown", { link = "WarningMsg" })
-  vim.api.nvim_set_hl(0, "SignalboxTitle", { link = "Title" })
-  vim.api.nvim_set_hl(0, "SignalboxWorkspace", { link = "Function" })
-  vim.api.nvim_set_hl(0, "SignalboxBorder", { link = "FloatBorder" })
-  vim.api.nvim_set_hl(0, "SignalboxMuted", { link = "Comment" })
-  vim.api.nvim_set_hl(0, "SignalboxGuideHeader", { link = "Title" })
-  vim.api.nvim_set_hl(0, "SignalboxGuideKey", { link = "Special" })
+  vim.api.nvim_set_hl(0, "HerdrBlocked", { link = "ErrorMsg" })
+  vim.api.nvim_set_hl(0, "HerdrWorking", { link = "Function" })
+  vim.api.nvim_set_hl(0, "HerdrDone", { link = "String" })
+  vim.api.nvim_set_hl(0, "HerdrIdle", { link = "Comment" })
+  vim.api.nvim_set_hl(0, "HerdrUnknown", { link = "WarningMsg" })
+  vim.api.nvim_set_hl(0, "HerdrTitle", { link = "Title" })
+  vim.api.nvim_set_hl(0, "HerdrWorkspace", { link = "Function" })
+  vim.api.nvim_set_hl(0, "HerdrBorder", { link = "FloatBorder" })
+  vim.api.nvim_set_hl(0, "HerdrMuted", { link = "Comment" })
+  vim.api.nvim_set_hl(0, "HerdrGuideHeader", { link = "Title" })
+  vim.api.nvim_set_hl(0, "HerdrGuideKey", { link = "Special" })
 end
 
 function M.setup()
   apply_highlights()
-  augroup = vim.api.nvim_create_augroup("SignalboxBoard", { clear = true })
+  augroup = vim.api.nvim_create_augroup("HerdrBoard", { clear = true })
   vim.api.nvim_create_autocmd("ColorScheme", {
     group = augroup,
     callback = apply_highlights,
   })
   vim.api.nvim_create_autocmd("User", {
     group = augroup,
-    pattern = "SignalboxUpdated",
+    pattern = "HerdrUpdated",
     callback = function()
       if M.is_open() then
         M.render()

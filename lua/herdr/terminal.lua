@@ -1,5 +1,5 @@
-local config = require("signalbox.config")
-local client = require("signalbox.client")
+local config = require("herdr.config")
+local client = require("herdr.client")
 
 local M = {}
 
@@ -43,7 +43,7 @@ local function return_to_board(bufnr, terminal_id)
     vim.api.nvim_buf_delete(bufnr, { force = true })
   end
   vim.schedule(function()
-    require("signalbox.board").open({ terminal_id = terminal_id })
+    require("herdr.board").open({ terminal_id = terminal_id })
   end)
 end
 
@@ -52,7 +52,7 @@ local function install_return_mapping(bufnr, terminal_id)
     buffer = bufnr,
     silent = true,
     nowait = true,
-    desc = "Return to Signalbox",
+    desc = "Return to Herdr",
   }
   vim.keymap.set({ "t", "n" }, config.get().terminal.return_key, function()
     return_to_board(bufnr, terminal_id)
@@ -73,7 +73,7 @@ function M.attach(agent, opts)
   local _, bufnr = open_split()
   vim.bo[bufnr].bufhidden = "wipe"
   vim.bo[bufnr].swapfile = false
-  vim.b[bufnr].signalbox_terminal_id = agent.terminal_id
+  vim.b[bufnr].herdr_terminal_id = agent.terminal_id
   install_return_mapping(bufnr, agent.terminal_id)
   local attach_output = ""
   local job_id, attach_err = client.attach(agent.target or agent.pane_id, opts.takeover == true, {
@@ -95,18 +95,18 @@ function M.attach(agent, opts)
           if lower:find("takeover", 1, true) or lower:find("another client", 1, true) then
             vim.notify(
               string.format(
-                "Herdr attach for %s is owned by another client; use :SignalboxAttach! %s to take over",
+                "Herdr attach for %s is owned by another client; use :HerdrAttach! %s to take over",
                 agent.name,
                 agent.terminal_id
               ),
               vim.log.levels.WARN,
-              { title = "Signalbox" }
+              { title = "Herdr" }
             )
           else
             vim.notify(
-              string.format("Herdr attach for %s exited with code %d; run :SignalboxHealth", agent.name, code),
+              string.format("Herdr attach for %s exited with code %d; run :HerdrHealth", agent.name, code),
               vim.log.levels.WARN,
-              { title = "Signalbox" }
+              { title = "Herdr" }
             )
           end
         end
@@ -115,7 +115,7 @@ function M.attach(agent, opts)
   })
   if not job_id then
     vim.api.nvim_buf_delete(bufnr, { force = true })
-    vim.notify(attach_err.message, vim.log.levels.ERROR, { title = "Signalbox" })
+    vim.notify(attach_err.message, vim.log.levels.ERROR, { title = "Herdr" })
     return nil
   end
   terminals[agent.terminal_id] = { bufnr = bufnr, job_id = job_id }

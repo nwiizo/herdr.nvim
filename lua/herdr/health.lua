@@ -1,7 +1,7 @@
 local M = {}
 
 local health = vim.health
-local compatibility = require("signalbox.compatibility")
+local compatibility = require("herdr.compatibility")
 local manifest_stale_after_seconds = 7 * 24 * 60 * 60
 
 local function json_optional(value)
@@ -160,7 +160,7 @@ local function check_agent_manifests(command, agents)
 end
 
 function M.check()
-  health.start("signalbox.nvim")
+  health.start("herdr.nvim")
 
   if vim.fn.has("nvim-0.10") == 1 then
     health.ok("Neovim 0.10 or newer")
@@ -168,10 +168,10 @@ function M.check()
     health.error("Neovim 0.10 or newer is required")
   end
 
-  local config = require("signalbox.config").get()
+  local config = require("herdr.config").get()
   local herdr_path = vim.fn.exepath(config.herdr_cmd)
   if herdr_path == "" then
-    health.error("Herdr is not executable", { "Install Herdr from https://herdr.dev/" })
+    health.error("Herdr is not executable", { "Install Herdr TUI from https://herdr.dev/tui/" })
   else
     local ok, stdout, stderr = run({ config.herdr_cmd, "--version" })
     if ok then
@@ -179,7 +179,7 @@ function M.check()
       if newer_than_verified(version_line) then
         health.warn(
           version_line
-            .. " is newer than the latest Signalbox compatibility audit ("
+            .. " is newer than the latest Herdr compatibility audit ("
             .. compatibility.verified_herdr_string
             .. ")",
           {

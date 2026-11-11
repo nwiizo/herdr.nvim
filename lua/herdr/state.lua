@@ -1,5 +1,5 @@
-local client = require("signalbox.client")
-local config = require("signalbox.config")
+local client = require("herdr.client")
+local config = require("herdr.config")
 
 local M = {}
 
@@ -23,7 +23,7 @@ local emit_user = function(pattern, data)
   pcall(vim.api.nvim_exec_autocmds, "User", { pattern = pattern, data = data })
 end
 local transition_handler = function(event)
-  require("signalbox.notifier").on_transition(event)
+  require("herdr.notifier").on_transition(event)
 end
 
 local rank = {
@@ -51,7 +51,7 @@ local function emit_transition(agent, previous_status)
     workspace_id = agent.workspace_id,
   }
   transition_handler(event)
-  emit_user("SignalboxAgentStatusChanged", event)
+  emit_user("HerdrAgentStatusChanged", event)
 end
 
 local function interval()
@@ -134,7 +134,7 @@ function M._accept(snapshot)
     end
   end
   initialized = true
-  emit_user("SignalboxUpdated", { stale = false, counts = counts(snapshot.agents) })
+  emit_user("HerdrUpdated", { stale = false, counts = counts(snapshot.agents) })
   finish_snapshot_waiters(true, snapshot)
 end
 
@@ -151,12 +151,12 @@ function M._fail(err, opts)
   if err and err.kind == "executable" and not failure_notifications.executable then
     failure_notifications.executable = true
     vim.notify(
-      "Herdr executable was not found. Install Herdr from https://herdr.dev/ and run :checkhealth signalbox",
+      "Herdr executable was not found. Install Herdr TUI from https://herdr.dev/tui/ and run :checkhealth herdr",
       vim.log.levels.ERROR,
-      { title = "Signalbox" }
+      { title = "Herdr" }
     )
   end
-  emit_user("SignalboxUpdated", { stale = stale, error = err })
+  emit_user("HerdrUpdated", { stale = stale, error = err })
   finish_snapshot_waiters(false, err)
 end
 
@@ -179,7 +179,8 @@ function M.refresh(opts, callback)
     end
     if not ok then
       in_flight = false
-      M._fail(server_err, { stop = true })
+      local terminal = server_err and (server_err.kind == "executable" or server_err.kind == "protocol")
+      M._fail(server_err, { stop = terminal })
       callback(false, server_err)
       return
     end
@@ -260,7 +261,7 @@ function M.acknowledge(terminal_id)
     return false
   end
   acknowledged[terminal_id] = agent.completion_seq or true
-  emit_user("SignalboxUpdated", { stale = stale, counts = M.counts() })
+  emit_user("HerdrUpdated", { stale = stale, counts = M.counts() })
   return true
 end
 
@@ -343,7 +344,7 @@ function M.stop()
     timer:close()
   end
   timer = nil
-  finish_snapshot_waiters(false, { kind = "lifecycle", message = "Signalbox state stopped before snapshot" })
+  finish_snapshot_waiters(false, { kind = "lifecycle", message = "Herdr state stopped before snapshot" })
 end
 
 function M._set_timer_factory(value)
@@ -378,7 +379,7 @@ function M._reset()
     pcall(vim.api.nvim_exec_autocmds, "User", { pattern = pattern, data = data })
   end
   transition_handler = function(event)
-    require("signalbox.notifier").on_transition(event)
+    require("herdr.notifier").on_transition(event)
   end
 end
 

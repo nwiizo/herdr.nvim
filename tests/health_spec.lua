@@ -1,5 +1,5 @@
 local h = require("tests.harness")
-local health = require("signalbox.health")
+local health = require("herdr.health")
 
 for _, endpoint in ipairs({ "yes", "no", "unknown" }) do
   h.test("health respects endpoint compatibility " .. endpoint .. " over private protocol compatibility", function()
@@ -11,7 +11,7 @@ for _, endpoint in ipairs({ "yes", "no", "unknown" }) do
       for name, handler in pairs(original_health) do
         vim.health[name] = handler
       end
-      require("signalbox.config")._reset()
+      require("herdr.config")._reset()
     end)
     for _, name in ipairs({ "start", "ok", "warn", "error", "info" }) do
       original_health[name] = vim.health[name]
@@ -19,11 +19,11 @@ for _, endpoint in ipairs({ "yes", "no", "unknown" }) do
         reports[message] = name
       end
     end
-    require("signalbox.config").setup({ herdr_cmd = vim.v.progpath })
+    require("herdr.config").setup({ herdr_cmd = vim.v.progpath })
     vim.system = function(argv)
       local output = ""
       if argv[2] == "--version" then
-        output = "herdr " .. require("signalbox.compatibility").verified_herdr_string
+        output = "herdr " .. require("herdr.compatibility").verified_herdr_string
       elseif argv[2] == "status" then
         output = "status: running\nendpoint_compatible: "
           .. endpoint

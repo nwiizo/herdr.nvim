@@ -1,9 +1,9 @@
 local h = require("tests.harness")
-local board = require("signalbox.board")
-local client = require("signalbox.client")
-local config = require("signalbox.config")
-local state = require("signalbox.state")
-local terminal = require("signalbox.terminal")
+local board = require("herdr.board")
+local client = require("herdr.client")
+local config = require("herdr.config")
+local state = require("herdr.state")
+local terminal = require("herdr.terminal")
 
 local function agent(id, status, workspace, cwd)
   return {
@@ -278,16 +278,16 @@ h.test("board renders grouped agents in attention order with local mappings", fu
   for _, chunk in ipairs(vim.api.nvim_win_get_config(0).title) do
     title_groups[chunk[2]] = true
   end
-  h.truthy(title_groups.SignalboxTitle)
-  h.truthy(title_groups.SignalboxBlocked)
-  local namespace = vim.api.nvim_get_namespaces()["signalbox-board"]
+  h.truthy(title_groups.HerdrTitle)
+  h.truthy(title_groups.HerdrBlocked)
+  local namespace = vim.api.nvim_get_namespaces()["herdr-board"]
   local rendered_groups = {}
   local marks = vim.api.nvim_buf_get_extmarks(bufnr, namespace, 0, -1, { details = true })
   for _, mark in ipairs(marks) do
     rendered_groups[mark[4].hl_group] = true
   end
-  h.truthy(rendered_groups.SignalboxWorkspace)
-  h.truthy(rendered_groups.SignalboxBlocked)
+  h.truthy(rendered_groups.HerdrWorkspace)
+  h.truthy(rendered_groups.HerdrBlocked)
   board.render()
   h.eq(marks, vim.api.nvim_buf_get_extmarks(bufnr, namespace, 0, -1, { details = true }))
   h.truthy(vim.fn.maparg("a", "n", false, true).buffer == 1)
@@ -314,7 +314,7 @@ h.test("numbered panel titles and digit mappings focus the requested panel", fun
 
   local list_window = vim.api.nvim_get_current_win()
   local preview_window = vim.fn.win_findbuf(board._preview_buffer())[1]
-  h.contains(window_title(list_window), "[1]-Signalbox")
+  h.contains(window_title(list_window), "[1]-Herdr")
   h.contains(window_title(preview_window), "[2]-Preview")
 
   local list_focus_preview
@@ -406,13 +406,13 @@ h.test("help opens an input-to-result guide even when the output preview is hidd
   h.contains(guide, "<CR> / i")
   h.contains(guide, config.get().terminal.return_key)
   h.contains(guide, "agent keeps running")
-  local namespace = vim.api.nvim_get_namespaces()["signalbox-board"]
+  local namespace = vim.api.nvim_get_namespaces()["herdr-board"]
   local groups = {}
   for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(board._preview_buffer(), namespace, 0, -1, { details = true })) do
     groups[mark[4].hl_group] = true
   end
-  h.truthy(groups.SignalboxGuideHeader)
-  h.truthy(groups.SignalboxGuideKey)
+  h.truthy(groups.HerdrGuideHeader)
+  h.truthy(groups.HerdrGuideKey)
 
   vim.fn.maparg("?", "n", false, true).callback()
   h.eq({}, vim.fn.win_findbuf(board._preview_buffer()))
@@ -559,6 +559,78 @@ h.test("stable preview content is not replaced while a refresh is in flight", fu
   board._reset()
 end)
 
+h.test("paused preview preserves text and cursor while ignoring an in-flight read", function()
+  reset()
+  h.defer(board._reset)
+  state._accept({ agents = { agent("work", "working") }, workspaces = {} })
+  local reads = {}
+  client._set_runner(function(_, _, callback)
+    reads[#reads + 1] = callback
+  end)
+  board.setup()
+  board.open()
+  h.truthy(vim.wait(1000, function()
+    return #reads == 1
+  end))
+  reads[1]({ code = 0, stdout = "first\nsecond\nthird", stderr = "" })
+  board.refresh_preview({ force = true })
+  local preview_window = vim.fn.win_findbuf(board._preview_buffer())[1]
+  vim.api.nvim_set_current_win(preview_window)
+  vim.api.nvim_win_set_cursor(preview_window, { 2, 2 })
+  local pause = vim.fn.maparg("P", "n", false, true).callback
+  h.truthy(type(pause) == "function", "P must pause the preview")
+  pause()
+  reads[2]({ code = 0, stdout = "late output", stderr = "" })
+  state._accept({ agents = { agent("work", "done") }, workspaces = {} })
+  board.render()
+  board.refresh_preview({ force = true })
+  h.eq(2, #reads)
+  h.eq({ "first", "second", "third" }, vim.api.nvim_buf_get_lines(board._preview_buffer(), 0, -1, false))
+  h.eq({ 2, 2 }, vim.api.nvim_win_get_cursor(preview_window))
+  h.contains(window_title(preview_window), "paused")
+  h.eq(1, state.counts().done)
+  pause()
+  h.eq(3, #reads)
+  reads[3]({ code = 0, stdout = "latest", stderr = "" })
+  h.eq({ "latest" }, vim.api.nvim_buf_get_lines(board._preview_buffer(), 0, -1, false))
+end)
+
+h.test("paused preview survives help and resumes when the selection changes or board closes", function()
+  reset()
+  h.defer(board._reset)
+  state._accept({ agents = { agent("first", "working"), agent("second", "working") }, workspaces = {} })
+  local reads = 0
+  client._set_runner(function(argv, _, callback)
+    reads = reads + 1
+    callback({ code = 0, stdout = table.concat(argv, " "), stderr = "" })
+  end)
+  board.setup()
+  board.open()
+  h.truthy(vim.wait(1000, function()
+    return reads == 1
+  end))
+  vim.fn.maparg("P", "n", false, true).callback()
+  local captured = vim.api.nvim_buf_get_lines(board._preview_buffer(), 0, -1, false)
+  vim.fn.maparg("?", "n", false, true).callback()
+  h.truthy(vim.wait(1000, function()
+    return vim.api.nvim_buf_get_lines(board._preview_buffer(), 0, 1, false)[1] == "INPUT → RESULT"
+  end))
+  vim.fn.maparg("?", "n", false, true).callback()
+  h.truthy(vim.wait(1000, function()
+    return vim.deep_equal(captured, vim.api.nvim_buf_get_lines(board._preview_buffer(), 0, -1, false))
+  end))
+  h.eq(1, reads)
+  select_terminal("second")
+  board.refresh_preview({ force = true })
+  h.eq(2, reads)
+  h.contains(vim.api.nvim_buf_get_lines(board._preview_buffer(), 0, 1, false)[1], "pane-second")
+  vim.fn.maparg("P", "n", false, true).callback()
+  board.close()
+  board.open()
+  board.refresh_preview({ force = true })
+  h.eq(3, reads)
+end)
+
 h.test("board renders stale last-good state", function()
   reset()
   state._accept({ agents = { agent("work", "working") }, workspaces = { { workspace_id = "w1", label = "one" } } })
@@ -581,8 +653,8 @@ h.test("board renders actionable missing-executable guidance", function()
   board.setup()
   board.open()
   local text = table.concat(vim.api.nvim_buf_get_lines(board._buffer(), 0, -1, false), "\n")
-  h.contains(text, "https://herdr.dev/")
-  h.contains(text, ":checkhealth signalbox")
+  h.contains(text, "https://herdr.dev/tui/")
+  h.contains(text, ":checkhealth herdr")
   board._reset()
 end)
 
@@ -591,11 +663,11 @@ h.test("board starts agents at the editor root captured before opening", functio
   local editor = vim.api.nvim_create_buf(true, false)
   vim.api.nvim_buf_set_name(editor, vim.fn.getcwd() .. "/lua/example.lua")
   vim.api.nvim_set_current_buf(editor)
-  local expected_root = require("signalbox.context").project_root(editor)
-  local signalbox = require("signalbox")
-  local original_start = signalbox.start
+  local expected_root = require("herdr.context").project_root(editor)
+  local herdr = require("herdr")
+  local original_start = herdr.start
   local captured
-  signalbox.start = function(_, opts)
+  herdr.start = function(_, opts)
     captured = opts.cwd
   end
   board.setup()
@@ -603,7 +675,7 @@ h.test("board starts agents at the editor root captured before opening", functio
   local mapping = vim.fn.maparg("a", "n", false, true)
   mapping.callback()
   h.eq(expected_root, captured)
-  signalbox.start = original_start
+  herdr.start = original_start
   board._reset()
   if vim.api.nvim_buf_is_valid(editor) then
     vim.api.nvim_buf_delete(editor, { force = true })
@@ -838,10 +910,10 @@ for _, case in ipairs({
       h.eq(1, #notices)
       h.eq(false, terminal.is_attached("term_1"))
       if case.takeover then
-        h.contains(notices[1].message, ":SignalboxAttach! term_1")
+        h.contains(notices[1].message, ":HerdrAttach! term_1")
         h.eq(vim.log.levels.WARN, notices[1].level)
       else
-        h.contains(notices[1].message, ":SignalboxHealth")
+        h.contains(notices[1].message, ":HerdrHealth")
         h.eq(vim.log.levels.WARN, notices[1].level)
       end
     end

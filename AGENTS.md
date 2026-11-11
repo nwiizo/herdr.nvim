@@ -2,7 +2,7 @@
 
 ## Scope
 
-Signalbox is an attention-first Neovim control surface for Herdr. Keep Herdr responsible for PTYs, process persistence, and semantic agent state. Keep Signalbox focused on transient Neovim UI, notifications, editor context, and explicit user actions.
+herdr.nvim is an attention-first Neovim control surface for Herdr TUI, using the `herdr` CLI. Herdr app and herdr-core (`hc`) are separate products, not plugin backends. Keep Herdr TUI responsible for PTYs, process persistence, and semantic agent state. Keep herdr.nvim focused on transient Neovim UI, notifications, editor context, and explicit user actions.
 
 ## Local Verification Before Commit
 

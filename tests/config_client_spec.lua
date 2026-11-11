@@ -1,6 +1,6 @@
 local h = require("tests.harness")
-local config = require("signalbox.config")
-local client = require("signalbox.client")
+local config = require("herdr.config")
+local client = require("herdr.client")
 
 local function reset()
   config._reset()
@@ -141,14 +141,14 @@ end)
 h.test("client derives and validates Herdr-compatible agent names before allocation", function()
   reset()
   config.setup()
-  h.eq("codex-signalbox-nvim", client.default_agent_name("codex", "signalbox.nvim"))
-  h.eq("codex-signalbox-nvim", client.next_agent_name("codex-signalbox-nvim", {}))
+  h.eq("codex-herdr-nvim", client.default_agent_name("codex", "herdr.nvim"))
+  h.eq("codex-herdr-nvim", client.next_agent_name("codex-herdr-nvim", {}))
   h.eq(
-    "codex-signalbox-nvim-3",
-    client.next_agent_name("codex-signalbox-nvim", {
-      { registered_name = "codex-signalbox-nvim" },
-      { registered_name = "codex-signalbox-nvim-2" },
-      { name = "codex-signalbox-nvim-3" },
+    "codex-herdr-nvim-3",
+    client.next_agent_name("codex-herdr-nvim", {
+      { registered_name = "codex-herdr-nvim" },
+      { registered_name = "codex-herdr-nvim-2" },
+      { name = "codex-herdr-nvim-3" },
     })
   )
   local bounded = client.next_agent_name(string.rep("a", 32), { { registered_name = string.rep("a", 32) } })
@@ -161,7 +161,7 @@ h.test("client derives and validates Herdr-compatible agent names before allocat
   client._set_runner(function()
     error("invalid names must not invoke Herdr")
   end)
-  client.start_agent("codex", "Codex.signalbox.nvim", "/repo", function(value, value_err)
+  client.start_agent("codex", "Codex.herdr.nvim", "/repo", function(value, value_err)
     result, err = value, value_err
   end)
   h.eq(nil, result)

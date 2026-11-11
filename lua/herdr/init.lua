@@ -14,7 +14,7 @@ local function message(err)
 end
 
 local function notify_error(err)
-  vim.notify(message(err), vim.log.levels.ERROR, { title = "Signalbox" })
+  vim.notify(message(err), vim.log.levels.ERROR, { title = "Herdr" })
 end
 
 local function has_api_code(err, code)
@@ -25,11 +25,11 @@ local function notify_prompt_stalled(agent)
   vim.notify(
     string.format(
       "Herdr did not observe %s start the instruction; clear any provider setup screen, "
-        .. "return to Signalbox, and press p to retry the saved draft",
+        .. "return to Herdr, and press p to retry the saved draft",
       agent.name
     ),
     vim.log.levels.WARN,
-    { title = "Signalbox" }
+    { title = "Herdr" }
   )
 end
 
@@ -38,7 +38,7 @@ local function valid_instruction(text)
     notify_error("instruction must be a string")
     return false
   end
-  if #text > require("signalbox.config").get().context.max_bytes then
+  if #text > require("herdr.config").get().context.max_bytes then
     notify_error("instruction exceeds context.max_bytes")
     return false
   end
@@ -52,7 +52,7 @@ local function ensure_setup()
 end
 
 local function configured_agent_kinds()
-  local agents = require("signalbox.config").get().agents
+  local agents = require("herdr.config").get().agents
   local result = {}
   for _, preferred in ipairs({ "codex", "claude" }) do
     if agents[preferred] then
@@ -81,7 +81,7 @@ end
 
 local function find_agent(target)
   local matches = {}
-  for _, agent in ipairs(require("signalbox.state").agents()) do
+  for _, agent in ipairs(require("herdr.state").agents()) do
     if target == agent.terminal_id or target == agent.pane_id then
       return agent
     end
@@ -98,11 +98,11 @@ local function find_agent(target)
     end, matches)
     return nil, string.format("agent name %q is ambiguous; use a terminal ID: %s", target, table.concat(ids, ", "))
   end
-  return nil, string.format("unknown Herdr agent %q; run :SignalboxRefresh", target)
+  return nil, string.format("unknown Herdr agent %q; run :HerdrRefresh", target)
 end
 
 local function with_target(target, callback)
-  local state = require("signalbox.state")
+  local state = require("herdr.state")
   state.ensure_snapshot(function(ok, snapshot_err)
     if not ok then
       notify_error(snapshot_err)
@@ -119,12 +119,12 @@ local function with_target(target, callback)
     end
     local agents = state.agents()
     if #agents == 0 then
-      notify_error("no Herdr agents; run :SignalboxStart codex or :SignalboxStart claude")
+      notify_error("no Herdr agents; run :HerdrStart codex or :HerdrStart claude")
     elseif #agents == 1 then
       callback(agents[1])
     else
       vim.ui.select(agents, {
-        prompt = "Signalbox agent:",
+        prompt = "Herdr agent:",
         format_item = function(agent)
           return string.format("%-12s %-8s %s  [%s]", agent.name, agent.status, agent.cwd or "", agent.terminal_id)
         end,
@@ -138,7 +138,7 @@ local function with_target(target, callback)
 end
 
 local function with_server(callback)
-  require("signalbox.client").ensure_server(function(ok, err)
+  require("herdr.client").ensure_server(function(ok, err)
     if not ok then
       notify_error(err)
       return
@@ -149,11 +149,11 @@ end
 
 local function attach_agent(agent, opts, callback)
   local function open_terminal()
-    local board = require("signalbox.board")
+    local board = require("herdr.board")
     if board.is_open() then
       board.close()
     end
-    local bufnr = require("signalbox.terminal").attach(agent, opts)
+    local bufnr = require("herdr.terminal").attach(agent, opts)
     if bufnr and callback then
       callback(bufnr)
     end
@@ -163,7 +163,7 @@ local function attach_agent(agent, opts, callback)
     open_terminal()
     return
   end
-  require("signalbox.client").move_current_pane(agent.workspace_id, function(_, err)
+  require("herdr.client").move_current_pane(agent.workspace_id, function(_, err)
     if err then
       notify_error("could not move Neovim to the agent's Herdr Space: " .. message(err))
       return
@@ -173,7 +173,7 @@ local function attach_agent(agent, opts, callback)
 end
 
 local function with_new_agent_name(kind, cwd, explicit_name, callback)
-  local client = require("signalbox.client")
+  local client = require("herdr.client")
   local project = vim.fn.fnamemodify(cwd, ":t")
   local default_name = client.default_agent_name(kind, project ~= "" and project or "agent")
   if explicit_name then
@@ -185,7 +185,7 @@ local function with_new_agent_name(kind, cwd, explicit_name, callback)
     callback(name)
     return
   end
-  require("signalbox.state").ensure_snapshot(function(ok, snapshot)
+  require("herdr.state").ensure_snapshot(function(ok, snapshot)
     if not ok then
       notify_error(snapshot)
       return
@@ -195,31 +195,31 @@ local function with_new_agent_name(kind, cwd, explicit_name, callback)
 end
 
 function M.setup(opts)
-  require("signalbox.config").setup(opts)
+  require("herdr.config").setup(opts)
   if initialized then
-    require("signalbox.state").stop()
+    require("herdr.state").stop()
   end
   lifecycle_generation = lifecycle_generation + 1
   local setup_generation = lifecycle_generation
-  require("signalbox.client").mark_server_unavailable()
-  require("signalbox.board").setup()
-  require("signalbox.notifier")._reset()
+  require("herdr.client").mark_server_unavailable()
+  require("herdr.board").setup()
+  require("herdr.notifier")._reset()
   pending_instructions = {}
   initialized = true
 
-  cleanup_group = vim.api.nvim_create_augroup("SignalboxCleanup", { clear = true })
+  cleanup_group = vim.api.nvim_create_augroup("HerdrCleanup", { clear = true })
   vim.api.nvim_create_autocmd("VimLeavePre", {
     group = cleanup_group,
     callback = function()
-      require("signalbox.state").stop()
-      require("signalbox.terminal").cleanup()
+      require("herdr.state").stop()
+      require("herdr.terminal").cleanup()
     end,
   })
   vim.api.nvim_create_autocmd("User", {
     group = cleanup_group,
-    pattern = "SignalboxUpdated",
+    pattern = "HerdrUpdated",
     callback = function()
-      for _, agent in ipairs(require("signalbox.state").agents()) do
+      for _, agent in ipairs(require("herdr.state").agents()) do
         if agent.status == "working" then
           pending_instructions[agent.terminal_id] = nil
         end
@@ -228,7 +228,7 @@ function M.setup(opts)
   })
   vim.schedule(function()
     if initialized and lifecycle_generation == setup_generation then
-      require("signalbox.state").start()
+      require("herdr.state").start()
     end
   end)
   return M
@@ -236,12 +236,12 @@ end
 
 function M.toggle()
   ensure_setup()
-  require("signalbox.board").toggle()
+  require("herdr.board").toggle()
 end
 
 function M.refresh()
   ensure_setup()
-  require("signalbox.state").refresh({ explicit = true }, function(ok, result)
+  require("herdr.state").refresh({ explicit = true }, function(ok, result)
     if not ok then
       notify_error(result)
     end
@@ -251,19 +251,19 @@ end
 function M.update_all()
   ensure_setup()
   if maintenance_running then
-    vim.notify("Herdr updates are already running", vim.log.levels.WARN, { title = "Signalbox" })
+    vim.notify("Herdr updates are already running", vim.log.levels.WARN, { title = "Herdr" })
     return
   end
   maintenance_running = true
-  vim.notify("Updating Herdr server, integrations, and manifests...", vim.log.levels.INFO, { title = "Signalbox" })
+  vim.notify("Updating Herdr server, integrations, and manifests...", vim.log.levels.INFO, { title = "Herdr" })
   local integrations = {}
-  local agents = require("signalbox.config").get().agents
+  local agents = require("herdr.config").get().agents
   for _, name in ipairs({ "codex", "claude" }) do
     if agents[name] then
       table.insert(integrations, name)
     end
   end
-  require("signalbox.client").update_all(integrations, function(result, err)
+  require("herdr.client").update_all(integrations, function(result, err)
     maintenance_running = false
     if err then
       notify_error(err)
@@ -286,9 +286,9 @@ function M.update_all()
         integration_summary
       ),
       vim.log.levels.INFO,
-      { title = "Signalbox" }
+      { title = "Herdr" }
     )
-    require("signalbox.state").refresh({ explicit = true }, function(ok, refresh_err)
+    require("herdr.state").refresh({ explicit = true }, function(ok, refresh_err)
       if not ok then
         notify_error(refresh_err)
       end
@@ -303,12 +303,12 @@ function M.start(kind, opts)
     if not selected_kind then
       return
     end
-    if not require("signalbox.config").get().agents[selected_kind] then
+    if not require("herdr.config").get().agents[selected_kind] then
       notify_error("unknown agent kind: " .. selected_kind)
       return
     end
-    local context = require("signalbox.context")
-    local client = require("signalbox.client")
+    local context = require("herdr.context")
+    local client = require("herdr.client")
     local cwd = opts.cwd or context.project_root(0)
     with_new_agent_name(selected_kind, cwd, opts.name, function(name)
       local function launch(instruction)
@@ -328,20 +328,20 @@ function M.start(kind, opts)
             local function attach_started_agent()
               if not started_agent then
                 vim.notify(
-                  "agent started, but Herdr did not return its terminal identity; refresh Signalbox to attach",
+                  "agent started, but Herdr did not return its terminal identity; refresh Herdr to attach",
                   vim.log.levels.WARN,
-                  { title = "Signalbox" }
+                  { title = "Herdr" }
                 )
-                require("signalbox.state").refresh({ explicit = true })
+                require("herdr.state").refresh({ explicit = true })
                 return
               end
               attach_agent(started_agent, nil, function()
                 vim.notify(
                   string.format("started %s agent %s", selected_kind, name),
                   vim.log.levels.INFO,
-                  { title = "Signalbox" }
+                  { title = "Herdr" }
                 )
-                require("signalbox.state").refresh({ explicit = true })
+                require("herdr.state").refresh({ explicit = true })
               end)
             end
 
@@ -390,7 +390,7 @@ function M.resume(kind, opts)
       notify_error("resume is not supported for agent kind: " .. selected_kind)
       return
     end
-    if not require("signalbox.config").get().agents[selected_kind] then
+    if not require("herdr.config").get().agents[selected_kind] then
       notify_error("unknown agent kind: " .. selected_kind)
       return
     end
@@ -400,30 +400,30 @@ function M.resume(kind, opts)
       if choice ~= "Continue" then
         return
       end
-      local cwd = opts.cwd or require("signalbox.context").project_root(0)
+      local cwd = opts.cwd or require("herdr.context").project_root(0)
       with_new_agent_name(selected_kind, cwd, opts.name, function(name)
         with_server(function()
-          require("signalbox.client").resume_agent(selected_kind, name, cwd, function(_, err, _, started_agent)
+          require("herdr.client").resume_agent(selected_kind, name, cwd, function(_, err, _, started_agent)
             if err then
               notify_error(err)
               return
             end
             if not started_agent then
               vim.notify(
-                "resume picker started, but Herdr did not return its terminal identity; refresh Signalbox to attach",
+                "resume picker started, but Herdr did not return its terminal identity; refresh Herdr to attach",
                 vim.log.levels.WARN,
-                { title = "Signalbox" }
+                { title = "Herdr" }
               )
-              require("signalbox.state").refresh({ explicit = true })
+              require("herdr.state").refresh({ explicit = true })
               return
             end
             attach_agent(started_agent, nil, function()
               vim.notify(
                 string.format("%s resume picker is ready; choose the conversation to rehome", selected_kind),
                 vim.log.levels.INFO,
-                { title = "Signalbox" }
+                { title = "Herdr" }
               )
-              require("signalbox.state").refresh({ explicit = true })
+              require("herdr.state").refresh({ explicit = true })
             end)
           end)
         end)
@@ -452,7 +452,7 @@ function M.rename(target)
       if not name or name == "" or name == agent.registered_name then
         return
       end
-      local client = require("signalbox.client")
+      local client = require("herdr.client")
       local _, name_err = client.validate_agent_name(name)
       if name_err then
         notify_error(name_err)
@@ -480,12 +480,8 @@ function M.rename(target)
               notify_error(err)
               return
             end
-            vim.notify(
-              string.format("renamed %s to %s", current.name, name),
-              vim.log.levels.INFO,
-              { title = "Signalbox" }
-            )
-            require("signalbox.state").refresh({ explicit = true })
+            vim.notify(string.format("renamed %s to %s", current.name, name), vim.log.levels.INFO, { title = "Herdr" })
+            require("herdr.state").refresh({ explicit = true })
           end)
         end)
       end)
@@ -495,7 +491,7 @@ end
 
 local function blocked_guidance(agent)
   return string.format(
-    "%s is waiting for approval or an answer; use :SignalboxAttach %s to respond in the agent terminal",
+    "%s is waiting for approval or an answer; use :HerdrAttach %s to respond in the agent terminal",
     agent.name,
     agent.terminal_id
   )
@@ -514,15 +510,13 @@ local function prompt_agent(agent, text, recovery)
   local function retain_draft(err, attempted)
     local buffer = vim.api.nvim_create_buf(true, true)
     vim.bo[buffer].bufhidden = "hide"
-    vim.api.nvim_buf_set_name(buffer, "signalbox://draft/" .. buffer)
+    vim.api.nvim_buf_set_name(buffer, "herdr://draft/" .. buffer)
     vim.api.nvim_buf_set_lines(buffer, 0, -1, false, vim.split(text, "\n", { plain = true }))
     local outcome = attempted and "delivery was not confirmed; inspect the agent before retrying"
       or "instruction was not sent"
-    notify_error(
-      message(err) .. "; " .. outcome .. ". Close Signalbox, then :buffer " .. buffer .. " to recover the draft"
-    )
+    notify_error(message(err) .. "; " .. outcome .. ". Close Herdr, then :buffer " .. buffer .. " to recover the draft")
   end
-  local client = require("signalbox.client")
+  local client = require("herdr.client")
   local request_generation = lifecycle_generation
   client.ensure_server(function(ok, server_err)
     if not ok then
@@ -547,7 +541,7 @@ local function prompt_agent(agent, text, recovery)
         or current.kind ~= agent.kind
         or current.registered_name ~= agent.registered_name
       then
-        retain_draft("agent or Signalbox changed while preparing the instruction")
+        retain_draft("agent or Herdr changed while preparing the instruction")
         return
       end
       if current.status == "blocked" then
@@ -569,7 +563,7 @@ local function prompt_agent(agent, text, recovery)
         if recovery then
           pending_instructions[agent.terminal_id] = nil
         end
-        vim.notify("prompted " .. current.name, vim.log.levels.INFO, { title = "Signalbox" })
+        vim.notify("prompted " .. current.name, vim.log.levels.INFO, { title = "Herdr" })
       end)
     end)
   end)
@@ -595,7 +589,7 @@ local function send_frozen_context(target, builder)
   local text, err = builder()
   if not text then
     local level = err == "buffer has no diagnostics" and vim.log.levels.INFO or vim.log.levels.ERROR
-    vim.notify(err, level, { title = "Signalbox" })
+    vim.notify(err, level, { title = "Herdr" })
     return
   end
   prompt_text(target, text)
@@ -609,7 +603,7 @@ function M.prompt(target, text)
   end
   with_target(target, function(agent)
     if agent.status == "blocked" then
-      vim.notify(blocked_guidance(agent), vim.log.levels.INFO, { title = "Signalbox" })
+      vim.notify(blocked_guidance(agent), vim.log.levels.INFO, { title = "Herdr" })
       return
     end
     local recovery = pending_instructions[agent.terminal_id] ~= nil
@@ -623,7 +617,7 @@ function M._send_range(target, bufnr, line1, line2)
   ensure_setup()
   local captured_buffer = concrete_buffer(bufnr)
   send_frozen_context(target, function()
-    return require("signalbox.context").range(captured_buffer, line1, line2, { target_cwd = false })
+    return require("herdr.context").range(captured_buffer, line1, line2, { target_cwd = false })
   end)
 end
 
@@ -631,7 +625,7 @@ function M._send_visual(target, bufnr, line1, line2)
   ensure_setup()
   local captured_buffer = concrete_buffer(bufnr)
   send_frozen_context(target, function()
-    return require("signalbox.context").range_from_marks(captured_buffer, line1, line2, { target_cwd = false })
+    return require("herdr.context").range_from_marks(captured_buffer, line1, line2, { target_cwd = false })
   end)
 end
 
@@ -639,7 +633,7 @@ function M._send_file(target, bufnr)
   ensure_setup()
   local captured_buffer = concrete_buffer(bufnr)
   send_frozen_context(target, function()
-    return require("signalbox.context").file(captured_buffer, { target_cwd = false })
+    return require("herdr.context").file(captured_buffer, { target_cwd = false })
   end)
 end
 
@@ -647,7 +641,7 @@ function M._send_diagnostics(target, bufnr)
   ensure_setup()
   local captured_buffer = concrete_buffer(bufnr)
   send_frozen_context(target, function()
-    return require("signalbox.context").diagnostics(captured_buffer, { target_cwd = false })
+    return require("herdr.context").diagnostics(captured_buffer, { target_cwd = false })
   end)
 end
 
@@ -656,15 +650,15 @@ function M.statusline()
     if not initialized then
       return ""
     end
-    local configured = require("signalbox.config").get()
+    local configured = require("herdr.config").get()
     if vim.fn.executable(configured.herdr_cmd) ~= 1 then
       return ""
     end
-    local status = require("signalbox.state").get()
+    local status = require("herdr.state").get()
     if not status.snapshot then
       return ""
     end
-    local counts = require("signalbox.state").counts()
+    local counts = require("herdr.state").counts()
     local parts = {}
     for _, key in ipairs({ "blocked", "done" }) do
       if counts[key] > 0 then
@@ -674,7 +668,7 @@ function M.statusline()
     if status.stale then
       table.insert(parts, "~")
     end
-    return #parts > 0 and "SB " .. table.concat(parts, " ") or ""
+    return #parts > 0 and "Herdr " .. table.concat(parts, " ") or ""
   end)
   return ok and result or ""
 end
@@ -683,7 +677,7 @@ M.send = M.prompt
 
 function M._complete_agents()
   local result = {}
-  for _, agent in ipairs(require("signalbox.state").agents()) do
+  for _, agent in ipairs(require("herdr.state").agents()) do
     table.insert(result, agent.terminal_id)
   end
   return result

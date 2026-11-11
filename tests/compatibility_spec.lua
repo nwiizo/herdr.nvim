@@ -1,5 +1,5 @@
 local h = require("tests.harness")
-local compatibility = require("signalbox.compatibility")
+local compatibility = require("herdr.compatibility")
 
 local function read(path)
   return table.concat(vim.fn.readfile(path), "\n")

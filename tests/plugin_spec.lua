@@ -1,48 +1,48 @@
 local h = require("tests.harness")
 
 h.test("plugin registers the approved user commands", function()
-  vim.g.loaded_signalbox_nvim = nil
-  vim.cmd("runtime plugin/signalbox.lua")
+  vim.g.loaded_herdr_nvim = nil
+  vim.cmd("runtime plugin/herdr.lua")
   for _, command in ipairs({
-    "Signalbox",
-    "SignalboxRefresh",
-    "SignalboxUpdateAll",
-    "SignalboxStart",
-    "SignalboxResume",
-    "SignalboxAttach",
-    "SignalboxPrompt",
-    "SignalboxRename",
-    "SignalboxSendVisual",
-    "SignalboxSendFile",
-    "SignalboxSendDiagnostics",
-    "SignalboxHealth",
+    "Herdr",
+    "HerdrRefresh",
+    "HerdrUpdateAll",
+    "HerdrStart",
+    "HerdrResume",
+    "HerdrAttach",
+    "HerdrPrompt",
+    "HerdrRename",
+    "HerdrSendVisual",
+    "HerdrSendFile",
+    "HerdrSendDiagnostics",
+    "HerdrHealth",
   }) do
     h.eq(2, vim.fn.exists(":" .. command), command .. " should exist")
   end
   local commands = vim.api.nvim_get_commands({})
-  h.eq(true, commands.SignalboxAttach.bang)
-  h.truthy(commands.SignalboxPrompt.range ~= nil)
-  h.truthy(commands.SignalboxSendVisual.range ~= nil)
+  h.eq(true, commands.HerdrAttach.bang)
+  h.truthy(commands.HerdrPrompt.range ~= nil)
+  h.truthy(commands.HerdrSendVisual.range ~= nil)
 end)
 
 h.test("update-all command dispatches explicit Herdr maintenance", function()
-  local signalbox = require("signalbox")
-  local original_update_all = signalbox.update_all
+  local herdr = require("herdr")
+  local original_update_all = herdr.update_all
   local calls = 0
-  signalbox.update_all = function()
+  herdr.update_all = function()
     calls = calls + 1
   end
-  vim.cmd("SignalboxUpdateAll")
-  signalbox.update_all = original_update_all
+  vim.cmd("HerdrUpdateAll")
+  herdr.update_all = original_update_all
   h.eq(1, calls)
 end)
 
 h.test("update-all maintains configured integrations and refreshes agent state", function()
-  local signalbox = require("signalbox")
-  local client = require("signalbox.client")
-  local config = require("signalbox.config")
-  local state = require("signalbox.state")
-  signalbox._reset()
+  local herdr = require("herdr")
+  local client = require("herdr.client")
+  local config = require("herdr.config")
+  local state = require("herdr.state")
+  herdr._reset()
   client._reset()
   config._reset()
   state._reset()
@@ -58,7 +58,7 @@ h.test("update-all maintains configured integrations and refreshes agent state",
     state.stop = original_stop
     state.refresh = original_refresh
     vim.notify = original_notify
-    signalbox._reset()
+    herdr._reset()
     client._reset()
     config._reset()
     state._reset()
@@ -82,8 +82,8 @@ h.test("update-all maintains configured integrations and refreshes agent state",
     table.insert(notifications, value)
   end
 
-  signalbox.setup()
-  signalbox.update_all()
+  herdr.setup()
+  herdr.update_all()
 
   h.eq({ "codex", "claude" }, maintained)
   h.eq(1, refreshes)
@@ -92,10 +92,10 @@ h.test("update-all maintains configured integrations and refreshes agent state",
 end)
 
 h.test("update-all rejects concurrent maintenance and resets its guard", function()
-  local signalbox = require("signalbox")
-  local client = require("signalbox.client")
-  local state = require("signalbox.state")
-  signalbox._reset()
+  local herdr = require("herdr")
+  local client = require("herdr.client")
+  local state = require("herdr.state")
+  herdr._reset()
   client._reset()
   state._reset()
 
@@ -110,7 +110,7 @@ h.test("update-all rejects concurrent maintenance and resets its guard", functio
     state.stop = original_stop
     state.refresh = original_refresh
     vim.notify = original_notify
-    signalbox._reset()
+    herdr._reset()
     client._reset()
     state._reset()
   end)
@@ -131,32 +131,32 @@ h.test("update-all rejects concurrent maintenance and resets its guard", functio
     table.insert(notifications, value)
   end
 
-  signalbox.setup()
-  signalbox.update_all()
-  signalbox.update_all()
+  herdr.setup()
+  herdr.update_all()
+  herdr.update_all()
   h.eq(1, calls)
   h.contains(table.concat(notifications, "\n"), "already running")
 
   finish({ server = "current", integrations = {}, manifests = true })
-  signalbox.update_all()
+  herdr.update_all()
   h.eq(2, calls)
 end)
 
 h.test("line and visual send commands use separate unambiguous paths", function()
-  local signalbox = require("signalbox")
-  local original_range = signalbox._send_range
-  local original_visual = signalbox._send_visual
+  local herdr = require("herdr")
+  local original_range = herdr._send_range
+  local original_visual = herdr._send_visual
   local calls = {}
-  signalbox._send_range = function(target, _, line1, line2)
+  herdr._send_range = function(target, _, line1, line2)
     table.insert(calls, { kind = "range", target = target, line1 = line1, line2 = line2 })
   end
-  signalbox._send_visual = function(target, _, line1, line2)
+  herdr._send_visual = function(target, _, line1, line2)
     table.insert(calls, { kind = "visual", target = target, line1 = line1, line2 = line2 })
   end
-  vim.cmd("1,1SignalboxPrompt term_1")
-  vim.cmd("1,1SignalboxSendVisual term_1")
-  signalbox._send_range = original_range
-  signalbox._send_visual = original_visual
+  vim.cmd("1,1HerdrPrompt term_1")
+  vim.cmd("1,1HerdrSendVisual term_1")
+  herdr._send_range = original_range
+  herdr._send_visual = original_visual
   h.eq({
     { kind = "range", target = "term_1", line1 = 1, line2 = 1 },
     { kind = "visual", target = "term_1", line1 = 1, line2 = 1 },
@@ -182,11 +182,11 @@ local function agent(id, name, status)
 end
 
 h.test("cold-start prompt waits for the initial Herdr snapshot", function()
-  local signalbox = require("signalbox")
-  local state = require("signalbox.state")
-  local client = require("signalbox.client")
-  local config = require("signalbox.config")
-  signalbox._reset()
+  local herdr = require("herdr")
+  local state = require("herdr.state")
+  local client = require("herdr.client")
+  local config = require("herdr.config")
+  herdr._reset()
   state._reset()
   client._reset()
   config._reset()
@@ -211,12 +211,12 @@ h.test("cold-start prompt waits for the initial Herdr snapshot", function()
     callback({ type = "agent_prompted" })
   end
 
-  signalbox.setup()
-  signalbox.prompt("term_1", "hello")
+  herdr.setup()
+  herdr.prompt("term_1", "hello")
   h.eq(2, snapshots)
   h.eq({ target = "term_1:pane", text = "hello" }, prompted)
 
-  signalbox._reset()
+  herdr._reset()
   state._reset()
   config._reset()
   client.ensure_server = original_ensure
@@ -226,11 +226,11 @@ h.test("cold-start prompt waits for the initial Herdr snapshot", function()
 end)
 
 h.test("cold-start context freezes the invoked buffer before snapshot completion", function()
-  local signalbox = require("signalbox")
-  local state = require("signalbox.state")
-  local client = require("signalbox.client")
-  local config = require("signalbox.config")
-  signalbox._reset()
+  local herdr = require("herdr")
+  local state = require("herdr.state")
+  local client = require("herdr.client")
+  local config = require("herdr.config")
+  herdr._reset()
   state._reset()
   client._reset()
   config._reset()
@@ -257,8 +257,8 @@ h.test("cold-start context freezes the invoked buffer before snapshot completion
   vim.bo[source].filetype = "lua"
   vim.api.nvim_set_current_buf(source)
 
-  signalbox.setup()
-  signalbox._send_range("term_1", source, 1, 1)
+  herdr.setup()
+  herdr._send_range("term_1", source, 1, 1)
   h.truthy(snapshot_callback ~= nil)
   h.eq(nil, prompted)
   vim.api.nvim_buf_set_lines(source, 0, -1, false, { "changed after invocation" })
@@ -274,7 +274,7 @@ h.test("cold-start context freezes the invoked buffer before snapshot completion
   h.contains(prompted.text, "original context")
   h.truthy(not prompted.text:find("changed after invocation", 1, true))
 
-  signalbox._reset()
+  herdr._reset()
   state._reset()
   config._reset()
   client.ensure_server = original_ensure
@@ -287,8 +287,8 @@ h.test("cold-start context freezes the invoked buffer before snapshot completion
 end)
 
 h.test("agent command targets use stable IDs and reject ambiguous names", function()
-  local signalbox = require("signalbox")
-  local state = require("signalbox.state")
+  local herdr = require("herdr")
+  local state = require("herdr.state")
   state._reset()
   state._set_transition_handler(function() end)
   state._set_emit(function() end)
@@ -296,27 +296,27 @@ h.test("agent command targets use stable IDs and reject ambiguous names", functi
     agents = { agent("term_1", "worker"), agent("term_2", "worker") },
     workspaces = { { workspace_id = "w1", label = "repo" } },
   })
-  h.eq({ "term_1", "term_2" }, signalbox._complete_agents())
-  h.eq("term_2", signalbox._find_agent("term_2").terminal_id)
-  local resolved, err = signalbox._find_agent("worker")
+  h.eq({ "term_1", "term_2" }, herdr._complete_agents())
+  h.eq("term_2", herdr._find_agent("term_2").terminal_id)
+  local resolved, err = herdr._find_agent("worker")
   h.eq(nil, resolved)
   h.contains(err, "ambiguous")
 end)
 
 for _, command in ipairs({ "prompt", "rename", "attach" }) do
   h.test("cancelling agent selection stops " .. command .. " without opening another input", function()
-    local signalbox = require("signalbox")
-    local state = require("signalbox.state")
-    signalbox._reset()
+    local herdr = require("herdr")
+    local state = require("herdr.state")
+    herdr._reset()
     state._reset()
     local original_start, original_select, original_input = state.start, vim.ui.select, vim.ui.input
     h.defer(function()
       state.start, vim.ui.select, vim.ui.input = original_start, original_select, original_input
-      signalbox._reset()
+      herdr._reset()
       state._reset()
     end)
     state.start = function() end
-    signalbox.setup()
+    herdr.setup()
     state._set_emit(function() end)
     state._accept({ agents = { agent("term_1", "one"), agent("term_2", "two") }, workspaces = {} })
     vim.ui.select = function(_, _, callback)
@@ -325,23 +325,23 @@ for _, command in ipairs({ "prompt", "rename", "attach" }) do
     vim.ui.input = function()
       error("cancelled selection must not open an input")
     end
-    signalbox[command]()
+    herdr[command]()
   end)
 end
 
 h.test("prompting a known blocked agent explains how to answer without opening an input", function()
-  local signalbox = require("signalbox")
-  local state = require("signalbox.state")
-  signalbox._reset()
+  local herdr = require("herdr")
+  local state = require("herdr.state")
+  herdr._reset()
   state._reset()
   local original_start, original_input, original_notify = state.start, vim.ui.input, vim.notify
   h.defer(function()
     state.start, vim.ui.input, vim.notify = original_start, original_input, original_notify
-    signalbox._reset()
+    herdr._reset()
     state._reset()
   end)
   state.start = function() end
-  signalbox.setup()
+  herdr.setup()
   state._set_emit(function() end)
   state._accept({ agents = { agent("term_1", "worker", "blocked") }, workspaces = {} })
   local notice
@@ -351,8 +351,8 @@ h.test("prompting a known blocked agent explains how to answer without opening a
   vim.ui.input = function()
     error("a blocked agent needs its native dialog, not a prompt input")
   end
-  signalbox.prompt("term_1")
-  h.contains(notice, ":SignalboxAttach term_1")
+  herdr.prompt("term_1")
+  h.contains(notice, ":HerdrAttach term_1")
   h.contains(notice, "approval or an answer")
 end)
 
@@ -367,10 +367,10 @@ for _, scenario in ipairs({
   "blocked at submission",
 }) do
   h.test("prompt revalidates its target: " .. scenario, function()
-    local signalbox = require("signalbox")
-    local state = require("signalbox.state")
-    local client = require("signalbox.client")
-    signalbox._reset()
+    local herdr = require("herdr")
+    local state = require("herdr.state")
+    local client = require("herdr.client")
+    herdr._reset()
     state._reset()
     local originals = {
       start = state.start,
@@ -388,7 +388,7 @@ for _, scenario in ipairs({
       client.prompt = originals.prompt
       vim.ui.input = originals.input
       vim.notify = originals.notify
-      signalbox._reset()
+      herdr._reset()
       state._reset()
       for _, buffer in ipairs(vim.api.nvim_list_bufs()) do
         if not vim.tbl_contains(buffers, buffer) then
@@ -397,7 +397,7 @@ for _, scenario in ipairs({
       end
     end)
     state.start = function() end
-    signalbox.setup()
+    herdr.setup()
     state._set_emit(function() end)
     state._accept({ agents = { agent("term_1", "worker") }, workspaces = {} })
     local input
@@ -436,7 +436,7 @@ for _, scenario in ipairs({
         callback({})
       end
     end
-    signalbox.prompt("term_1")
+    herdr.prompt("term_1")
     input("keep this\nexact instruction")
     if scenario == "moved" then
       h.eq({ "new:pane", "keep this\nexact instruction" }, sent)
@@ -450,7 +450,7 @@ for _, scenario in ipairs({
       end
       if scenario:find("blocked", 1, true) then
         h.contains(table.concat(notices, "\n"), "instruction was not sent")
-        h.contains(table.concat(notices, "\n"), ":SignalboxAttach term_1")
+        h.contains(table.concat(notices, "\n"), ":HerdrAttach term_1")
       end
       local buffer = tonumber(table.concat(notices, "\n"):match(":buffer (%d+)"))
       h.truthy(buffer, "failure should identify the recoverable draft buffer")
@@ -462,11 +462,11 @@ for _, scenario in ipairs({
 end
 
 h.test("rename prompts with the current role and refreshes after Herdr accepts it", function()
-  local signalbox = require("signalbox")
-  local state = require("signalbox.state")
-  local client = require("signalbox.client")
-  local config = require("signalbox.config")
-  signalbox._reset()
+  local herdr = require("herdr")
+  local state = require("herdr.state")
+  local client = require("herdr.client")
+  local config = require("herdr.config")
+  herdr._reset()
   state._reset()
   client._reset()
   config._reset()
@@ -490,7 +490,7 @@ h.test("rename prompts with the current role and refreshes after Herdr accepts i
     client.rename = originals.rename
     vim.ui.input = originals.input
     vim.notify = originals.notify
-    signalbox._reset()
+    herdr._reset()
     state._reset()
     client._reset()
     config._reset()
@@ -521,24 +521,24 @@ h.test("rename prompts with the current role and refreshes after Herdr accepts i
   end
   vim.notify = function() end
 
-  signalbox.setup()
+  herdr.setup()
   state._set_transition_handler(function() end)
   state._set_emit(function() end)
   state._accept({
     agents = { agent("term_1", "worker") },
     workspaces = { { workspace_id = "w1", label = "repo" } },
   })
-  signalbox.rename("term_1")
+  herdr.rename("term_1")
   h.eq({ target = "term_1:pane", name = "reviewer" }, renamed)
   h.eq(1, refreshes)
 end)
 
 h.test("rename aborts when the selected agent changes while the input is open", function()
-  local signalbox = require("signalbox")
-  local state = require("signalbox.state")
-  local client = require("signalbox.client")
-  local config = require("signalbox.config")
-  signalbox._reset()
+  local herdr = require("herdr")
+  local state = require("herdr.state")
+  local client = require("herdr.client")
+  local config = require("herdr.config")
+  herdr._reset()
   state._reset()
   client._reset()
   config._reset()
@@ -562,7 +562,7 @@ h.test("rename aborts when the selected agent changes while the input is open", 
     client.rename = originals.rename
     vim.ui.input = originals.input
     vim.notify = originals.notify
-    signalbox._reset()
+    herdr._reset()
     state._reset()
     client._reset()
     config._reset()
@@ -589,14 +589,14 @@ h.test("rename aborts when the selected agent changes while the input is open", 
     table.insert(notifications, message)
   end
 
-  signalbox.setup()
+  herdr.setup()
   state._set_transition_handler(function() end)
   state._set_emit(function() end)
   state._accept({
     agents = { agent("term_1", "worker") },
     workspaces = { { workspace_id = "w1", label = "repo" } },
   })
-  signalbox.rename("term_1")
+  herdr.rename("term_1")
   h.truthy(input_callback ~= nil)
   local replacement = agent("term_2", "replacement")
   replacement.pane_id = "term_1:pane"
@@ -611,11 +611,11 @@ h.test("rename aborts when the selected agent changes while the input is open", 
 end)
 
 h.test("rename aborts when the selected agent is renamed elsewhere while the input is open", function()
-  local signalbox = require("signalbox")
-  local state = require("signalbox.state")
-  local client = require("signalbox.client")
-  local config = require("signalbox.config")
-  signalbox._reset()
+  local herdr = require("herdr")
+  local state = require("herdr.state")
+  local client = require("herdr.client")
+  local config = require("herdr.config")
+  herdr._reset()
   state._reset()
   client._reset()
   config._reset()
@@ -639,7 +639,7 @@ h.test("rename aborts when the selected agent is renamed elsewhere while the inp
     client.rename = originals.rename
     vim.ui.input = originals.input
     vim.notify = originals.notify
-    signalbox._reset()
+    herdr._reset()
     state._reset()
     client._reset()
     config._reset()
@@ -669,26 +669,26 @@ h.test("rename aborts when the selected agent is renamed elsewhere while the inp
     table.insert(notifications, message)
   end
 
-  signalbox.setup()
+  herdr.setup()
   state._set_transition_handler(function() end)
   state._set_emit(function() end)
   state._accept({
     agents = { agent("term_1", "worker") },
     workspaces = { { workspace_id = "w1", label = "repo" } },
   })
-  signalbox.rename("term_1")
+  herdr.rename("term_1")
   h.eq(false, rename_called)
   h.contains(table.concat(notifications, "\n"), "agent changed")
 end)
 
 h.test("attach moves Neovim into the selected agent workspace before opening its terminal", function()
-  local signalbox = require("signalbox")
-  local state = require("signalbox.state")
-  local client = require("signalbox.client")
-  local terminal = require("signalbox.terminal")
-  local board = require("signalbox.board")
-  local config = require("signalbox.config")
-  signalbox._reset()
+  local herdr = require("herdr")
+  local state = require("herdr.state")
+  local client = require("herdr.client")
+  local terminal = require("herdr.terminal")
+  local board = require("herdr.board")
+  local config = require("herdr.config")
+  herdr._reset()
   state._reset()
   client._reset()
   config._reset()
@@ -714,7 +714,7 @@ h.test("attach moves Neovim into the selected agent workspace before opening its
     board.close = originals.board_close
     vim.notify = originals.notify
     vim.env.HERDR_ENV = originals.herdr_env
-    signalbox._reset()
+    herdr._reset()
     state._reset()
     client._reset()
     config._reset()
@@ -751,7 +751,7 @@ h.test("attach moves Neovim into the selected agent workspace before opening its
   end
   vim.env.HERDR_ENV = "1"
 
-  signalbox.setup()
+  herdr.setup()
   state._set_transition_handler(function() end)
   state._set_emit(function() end)
   state._accept({
@@ -761,7 +761,7 @@ h.test("attach moves Neovim into the selected agent workspace before opening its
       { workspace_id = "w2", label = "review" },
     },
   })
-  signalbox.attach("term_2")
+  herdr.attach("term_2")
 
   h.eq("w2", moved_to)
   h.eq(nil, attached)
@@ -771,20 +771,20 @@ h.test("attach moves Neovim into the selected agent workspace before opening its
   h.eq(false, board_closed)
   h.contains(table.concat(notifications, "\n"), "could not move Neovim")
 
-  signalbox.attach("term_2")
+  herdr.attach("term_2")
   move_callback({ moved = true, pane = { pane_id = "w2:p3", workspace_id = "w2" } })
   h.eq("term_2", attached.terminal_id)
   h.eq(true, board_closed)
 end)
 
 h.test("starting an agent collects an initial instruction and attaches its live terminal", function()
-  local signalbox = require("signalbox")
-  local state = require("signalbox.state")
-  local client = require("signalbox.client")
-  local terminal = require("signalbox.terminal")
-  local board = require("signalbox.board")
-  local config = require("signalbox.config")
-  signalbox._reset()
+  local herdr = require("herdr")
+  local state = require("herdr.state")
+  local client = require("herdr.client")
+  local terminal = require("herdr.terminal")
+  local board = require("herdr.board")
+  local config = require("herdr.config")
+  herdr._reset()
   state._reset()
   client._reset()
   config._reset()
@@ -822,8 +822,8 @@ h.test("starting an agent collects an initial instruction and attaches its live 
   end
   client.snapshot = function(callback)
     callback({
-      agents = { agent("term_1", "codex-signalbox-nvim", "idle") },
-      workspaces = { { workspace_id = "w1", label = "signalbox.nvim" } },
+      agents = { agent("term_1", "codex-herdr-nvim", "idle") },
+      workspaces = { { workspace_id = "w1", label = "herdr.nvim" } },
     })
   end
   client.start_agent = function(kind, name, cwd, callback)
@@ -852,16 +852,16 @@ h.test("starting an agent collects an initial instruction and attaches its live 
     table.insert(notifications, message)
   end
 
-  signalbox.setup()
-  signalbox.start("codex", { cwd = "/tmp/signalbox.nvim" })
+  herdr.setup()
+  herdr.start("codex", { cwd = "/tmp/herdr.nvim" })
   h.eq(1, #prompts)
   h.eq("Initial instruction (empty to skip, cancel to abort): ", prompts[1].prompt)
-  h.eq({ kind = "codex", name = "codex-signalbox-nvim-2", cwd = "/tmp/signalbox.nvim" }, started)
+  h.eq({ kind = "codex", name = "codex-herdr-nvim-2", cwd = "/tmp/herdr.nvim" }, started)
   h.eq({ target = "term_2:pane", instruction = "review the current diff" }, prompted)
   h.eq("term_2", attached.terminal_id)
   h.truthy(board_closed)
   h.eq(2, refreshes)
-  h.eq(nil, signalbox._pending_instruction("term_2"))
+  h.eq(nil, herdr._pending_instruction("term_2"))
 
   client.start_agent = function(kind, name, cwd, callback)
     started = { kind = kind, name = name, cwd = cwd }
@@ -874,20 +874,20 @@ h.test("starting an agent collects an initial instruction and attaches its live 
       message = "agent did not start working after prompt submission",
     })
   end
-  signalbox.start("codex", {
-    cwd = "/tmp/signalbox.nvim",
+  herdr.start("codex", {
+    cwd = "/tmp/herdr.nvim",
     name = "stalled-instruction",
     instruction = "retry this instruction",
   })
-  h.eq("retry this instruction", signalbox._pending_instruction("term_3"))
+  h.eq("retry this instruction", herdr._pending_instruction("term_3"))
   h.contains(table.concat(notifications, "\n"), "press p to retry the saved draft")
 
   state._accept({
     agents = {
-      agent("term_1", "codex-signalbox-nvim", "idle"),
+      agent("term_1", "codex-herdr-nvim", "idle"),
       agent("term_3", "stalled-instruction", "idle"),
     },
-    workspaces = { { workspace_id = "w1", label = "signalbox.nvim" } },
+    workspaces = { { workspace_id = "w1", label = "herdr.nvim" } },
   })
   local retry_defaults = {}
   vim.ui.input = function(opts, callback)
@@ -896,14 +896,14 @@ h.test("starting an agent collects an initial instruction and attaches its live 
     end
     callback(nil)
   end
-  signalbox.prompt("term_3")
+  herdr.prompt("term_3")
   h.eq("retry this instruction", retry_defaults[1])
 
   local retry_prompted
   client.snapshot = function(callback)
     callback({
       agents = { agent("term_3", "stalled-instruction", "idle") },
-      workspaces = { { workspace_id = "w1", label = "signalbox.nvim" } },
+      workspaces = { { workspace_id = "w1", label = "herdr.nvim" } },
     })
   end
   client.prompt_until_working = function(target, instruction, callback)
@@ -916,9 +916,9 @@ h.test("starting an agent collects an initial instruction and attaches its live 
     end
     callback(opts.default)
   end
-  signalbox.prompt("term_3")
+  herdr.prompt("term_3")
   h.eq({ target = "term_3:pane", instruction = "retry this instruction" }, retry_prompted)
-  h.eq(nil, signalbox._pending_instruction("term_3"))
+  h.eq(nil, herdr._pending_instruction("term_3"))
 
   client.prompt_until_working = function(_, _, callback)
     callback(nil, {
@@ -927,30 +927,30 @@ h.test("starting an agent collects an initial instruction and attaches its live 
       message = "agent did not start working after prompt submission",
     })
   end
-  signalbox.start("codex", {
-    cwd = "/tmp/signalbox.nvim",
+  herdr.start("codex", {
+    cwd = "/tmp/herdr.nvim",
     name = "stalled-instruction",
     instruction = "retry this instruction",
   })
-  h.eq("retry this instruction", signalbox._pending_instruction("term_3"))
+  h.eq("retry this instruction", herdr._pending_instruction("term_3"))
 
   state._accept({
     agents = {
-      agent("term_1", "codex-signalbox-nvim", "idle"),
+      agent("term_1", "codex-herdr-nvim", "idle"),
       agent("term_3", "stalled-instruction", "working"),
     },
-    workspaces = { { workspace_id = "w1", label = "signalbox.nvim" } },
+    workspaces = { { workspace_id = "w1", label = "herdr.nvim" } },
   })
-  h.eq(nil, signalbox._pending_instruction("term_3"))
-  signalbox.prompt("term_3")
+  h.eq(nil, herdr._pending_instruction("term_3"))
+  herdr.prompt("term_3")
   h.eq(vim.NIL, retry_defaults[3])
   vim.ui.input = function(opts, callback)
     callback(opts.default)
   end
 
   started = nil
-  signalbox.start("codex", {
-    cwd = "/tmp/signalbox.nvim",
+  herdr.start("codex", {
+    cwd = "/tmp/herdr.nvim",
     name = "oversized-instruction",
     instruction = string.rep("x", 65537),
   })
@@ -961,8 +961,8 @@ h.test("starting an agent collects an initial instruction and attaches its live 
   client.start_agent = function(_, _, _, callback)
     callback({ type = "agent_started" }, nil, { pane_id = "w1:p3" }, nil)
   end
-  signalbox.start("codex", {
-    cwd = "/tmp/signalbox.nvim",
+  herdr.start("codex", {
+    cwd = "/tmp/herdr.nvim",
     name = "missing-identity",
     instruction = "",
   })
@@ -983,20 +983,20 @@ h.test("starting an agent collects an initial instruction and attaches its live 
   board.close = originals.board_close
   vim.ui.input = originals.input
   vim.notify = originals.notify
-  signalbox._reset()
+  herdr._reset()
   state._reset()
   client._reset()
   config._reset()
 end)
 
 h.test("resuming an agent confirms handoff and attaches directly to its picker", function()
-  local signalbox = require("signalbox")
-  local state = require("signalbox.state")
-  local client = require("signalbox.client")
-  local terminal = require("signalbox.terminal")
-  local board = require("signalbox.board")
-  local config = require("signalbox.config")
-  signalbox._reset()
+  local herdr = require("herdr")
+  local state = require("herdr.state")
+  local client = require("herdr.client")
+  local terminal = require("herdr.terminal")
+  local board = require("herdr.board")
+  local config = require("herdr.config")
+  herdr._reset()
   state._reset()
   client._reset()
   config._reset()
@@ -1028,7 +1028,7 @@ h.test("resuming an agent confirms handoff and attaches directly to its picker",
     vim.ui.input = originals.input
     vim.ui.select = originals.select
     vim.notify = originals.notify
-    signalbox._reset()
+    herdr._reset()
     state._reset()
     client._reset()
     config._reset()
@@ -1052,8 +1052,8 @@ h.test("resuming an agent confirms handoff and attaches directly to its picker",
   end
   client.snapshot = function(callback)
     callback({
-      agents = { agent("term_1", "codex-signalbox-nvim", "idle") },
-      workspaces = { { workspace_id = "w1", label = "signalbox.nvim" } },
+      agents = { agent("term_1", "codex-herdr-nvim", "idle") },
+      workspaces = { { workspace_id = "w1", label = "herdr.nvim" } },
     })
   end
   client.resume_agent = function(kind, name, cwd, callback)
@@ -1082,12 +1082,12 @@ h.test("resuming an agent confirms handoff and attaches directly to its picker",
     table.insert(notifications, value)
   end
 
-  signalbox.setup()
-  signalbox.resume("codex", { cwd = "/tmp/signalbox.nvim" })
+  herdr.setup()
+  herdr.resume("codex", { cwd = "/tmp/herdr.nvim" })
   h.contains(selections[1].opts.prompt, "Stop the existing codex client")
   h.eq({ "Continue", "Cancel" }, selections[1].items)
   h.eq(0, #inputs)
-  h.eq({ kind = "codex", name = "codex-signalbox-nvim-2", cwd = "/tmp/signalbox.nvim" }, resumed)
+  h.eq({ kind = "codex", name = "codex-herdr-nvim-2", cwd = "/tmp/herdr.nvim" }, resumed)
   h.eq("term_2", attached.terminal_id)
   h.truthy(board_closed)
   h.eq(2, refreshes)
@@ -1098,46 +1098,46 @@ h.test("resuming an agent confirms handoff and attaches directly to its picker",
   vim.ui.select = function(_, _, callback)
     callback("Cancel")
   end
-  signalbox.resume("codex", { cwd = "/tmp/signalbox.nvim" })
+  herdr.resume("codex", { cwd = "/tmp/herdr.nvim" })
   h.eq(nil, resumed)
   h.eq(nil, attached)
 end)
 
 h.test("statusline is healthy, stale, and empty when Herdr is missing", function()
-  local signalbox = require("signalbox")
-  local state = require("signalbox.state")
-  local config = require("signalbox.config")
-  signalbox._reset()
+  local herdr = require("herdr")
+  local state = require("herdr.state")
+  local config = require("herdr.config")
+  herdr._reset()
   state._reset()
   config._reset()
   local original_start = state.start
   local original_stop = state.stop
   state.start = function() end
   state.stop = function() end
-  signalbox.setup({ herdr_cmd = vim.v.progpath })
+  herdr.setup({ herdr_cmd = vim.v.progpath })
   state._set_transition_handler(function() end)
   state._set_emit(function() end)
   state._accept({
     agents = { agent("term_1", "worker", "blocked") },
     workspaces = { { workspace_id = "w1", label = "repo" } },
   })
-  h.eq("SB !1", signalbox.statusline())
+  h.eq("Herdr !1", herdr.statusline())
   state._fail({ kind = "process", message = "offline" })
-  h.eq("SB !1 ~", signalbox.statusline())
+  h.eq("Herdr !1 ~", herdr.statusline())
   config.setup({ herdr_cmd = "definitely-not-a-real-herdr-command" })
-  h.eq("", signalbox.statusline())
+  h.eq("", herdr.statusline())
   state.start = original_start
   state.stop = original_stop
-  signalbox._reset()
+  herdr._reset()
   state._reset()
   config._reset()
 end)
 
 h.test("invalid reconfiguration does not stop a working instance", function()
-  local signalbox = require("signalbox")
-  local state = require("signalbox.state")
-  local config = require("signalbox.config")
-  signalbox._reset()
+  local herdr = require("herdr")
+  local state = require("herdr.state")
+  local config = require("herdr.config")
+  herdr._reset()
   state._reset()
   config._reset()
   local stops = 0
@@ -1147,24 +1147,24 @@ h.test("invalid reconfiguration does not stop a working instance", function()
   state.stop = function()
     stops = stops + 1
   end
-  signalbox.setup({ board = { width = 50 } })
+  herdr.setup({ board = { width = 50 } })
   h.raises("refresh.board_ms", function()
-    signalbox.setup({ refresh = { board_ms = 0 } })
+    herdr.setup({ refresh = { board_ms = 0 } })
   end)
   h.eq(0, stops)
   h.eq(50, config.get().board.width)
   state.start = original_start
   state.stop = original_stop
-  signalbox._reset()
+  herdr._reset()
   state._reset()
   config._reset()
 end)
 
 h.test("only the latest setup lifecycle may start background state", function()
-  local signalbox = require("signalbox")
-  local state = require("signalbox.state")
-  local config = require("signalbox.config")
-  signalbox._reset()
+  local herdr = require("herdr")
+  local state = require("herdr.state")
+  local config = require("herdr.config")
+  herdr._reset()
   state._reset()
   config._reset()
   local original_start = state.start
@@ -1174,13 +1174,13 @@ h.test("only the latest setup lifecycle may start background state", function()
     starts = starts + 1
   end
   state.stop = function() end
-  signalbox.setup()
-  signalbox.setup()
+  herdr.setup()
+  herdr.setup()
   h.truthy(vim.wait(1000, function()
     return starts == 1
   end))
   h.eq(1, starts)
-  signalbox._reset()
+  herdr._reset()
   state.start = original_start
   state.stop = original_stop
   state._reset()

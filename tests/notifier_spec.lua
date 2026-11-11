@@ -1,9 +1,9 @@
 local h = require("tests.harness")
-local board = require("signalbox.board")
-local config = require("signalbox.config")
-local notifier = require("signalbox.notifier")
-local state = require("signalbox.state")
-local terminal = require("signalbox.terminal")
+local board = require("herdr.board")
+local config = require("herdr.config")
+local notifier = require("herdr.notifier")
+local state = require("herdr.state")
+local terminal = require("herdr.terminal")
 
 local function reset(opts)
   board._reset()
@@ -58,7 +58,7 @@ h.test("notifier distinguishes completions with the same terminal revision", fun
   h.eq(2, count)
 end)
 
-h.test("notifier follows a vim.notify provider installed after Signalbox setup", function()
+h.test("notifier follows a vim.notify provider installed after Herdr setup", function()
   reset()
   local original_notify = vim.notify
   local count = 0
@@ -112,8 +112,8 @@ h.test("notifier only suppresses matching blocked attention in a live attach", f
   local previous = vim.api.nvim_get_current_buf()
   local live_buffer = vim.api.nvim_create_buf(false, true)
   local stale_buffer = vim.api.nvim_create_buf(false, true)
-  vim.b[live_buffer].signalbox_terminal_id = "attached"
-  vim.b[stale_buffer].signalbox_terminal_id = "attached"
+  vim.b[live_buffer].herdr_terminal_id = "attached"
+  vim.b[stale_buffer].herdr_terminal_id = "attached"
   terminal._terminals().attached = { bufnr = live_buffer, job_id = 17 }
 
   vim.api.nvim_set_current_buf(stale_buffer)

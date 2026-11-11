@@ -47,7 +47,7 @@ local defaults = {
 local values
 
 local function fail(path, expected)
-  error(string.format("signalbox.nvim: %s must be %s", path, expected), 3)
+  error(string.format("herdr.nvim: %s must be %s", path, expected), 3)
 end
 
 local function validate_string(value, path)

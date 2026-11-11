@@ -1,4 +1,4 @@
-local config = require("signalbox.config")
+local config = require("herdr.config")
 
 local M = {}
 

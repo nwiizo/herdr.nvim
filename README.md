@@ -1,19 +1,23 @@
 <p align="center">
-  <img src="assets/signalbox.png" alt="Signalbox: Neovim routing a herd of terminal agents" width="180">
+  <img src="assets/herdr.png" alt="herdr.nvim: Neovim routing a herd of terminal agents" width="180">
 </p>
 
-# signalbox.nvim
+# herdr.nvim
 
-`signalbox.nvim` is an attention-first Neovim control surface for persistent coding agents managed by [Herdr](https://herdr.dev/).
+`herdr.nvim` is an attention-first Neovim control surface for persistent coding agents managed by [Herdr TUI](https://herdr.dev/tui/).
 
-It is named after a railway signal box: it does not drive the trains or replace their engines. It gives one operator a compact view of traffic, highlights the routes that need intervention, and provides safe controls at the junctions.
+It gives one operator a compact view of Herdr agents, highlights work that needs intervention, and provides explicit controls from Neovim.
+
+It connects to the TUI runtime through the `herdr` CLI. Herdr app and `herdr-core` (`hc`) use a separate runtime; they are not supported by this plugin. Keep `herdr_cmd` pointed at `herdr`.
 
 > [!NOTE]
 > This is an unofficial community integration. It is not maintained or endorsed by the Herdr project.
 
 <p align="center">
-  <img src="assets/signalbox-board.png" alt="Signalbox board showing completed Codex and Claude agents with a read-only output preview">
+  <img src="assets/herdr-board.png" alt="herdr.nvim board showing completed Codex and Claude agents with a read-only output preview">
 </p>
+
+Screenshots use demo data from [`tests/demo.lua`](tests/demo.lua).
 
 ## The job
 
@@ -22,7 +26,7 @@ It is named after a railway signal box: it does not drive the trains or replace 
 That job shapes the product:
 
 - Herdr owns PTYs, processes, semantic state, and persistence.
-- Signalbox owns the Neovim view, transient cache, and editor actions.
+- herdr.nvim owns the Neovim view, transient cache, and editor actions.
 - `blocked` and `done` come before terminal topology.
 - Recent terminal output is previewed but never persisted by this plugin.
 - Attach, prompt, start, and repository actions remain explicit user actions.
@@ -33,9 +37,10 @@ That job shapes the product:
 - Current project agents plus `blocked`/`done` agents elsewhere by default
 - A compact count of agents still working elsewhere, without crowding the attention queue
 - Ephemeral recent-output preview for the selected agent
+- Pause the preview while reading or copying, with agent monitoring still active
 - In-product `INPUT → RESULT` guide for every board key
 - One-key Herdr state explanation with matched detection rule and evidence
-- Stable role names for agents discovered outside Signalbox
+- Stable role names for agents discovered outside herdr.nvim
 - Notifications when an agent becomes blocked or completes work
 - Herdr 0.9.5-verified lifecycle commands with persistent Codex/Claude launch presets
 - Conversation rehoming through the native Claude Code and Codex resume pickers
@@ -44,7 +49,7 @@ That job shapes the product:
 - Prompt, file, visual selection, range, and LSP diagnostic context
 - Transient retry drafts when Herdr reports that an initial instruction stalled
 - Optional `Snacks.lazygit` and Diffview actions from the selected agent's cwd
-- Compact attention-only status component and `:checkhealth signalbox`, including detection-manifest freshness
+- Compact attention-only status component and `:checkhealth herdr`, including detection-manifest freshness
 - Pure Lua with no required Neovim plugin dependency
 
 ## Requirements
@@ -61,7 +66,7 @@ herdr integration install codex
 herdr integration install claude
 ```
 
-When upgrading to Herdr 0.9.5, rerun these commands or use `:SignalboxUpdateAll` to refresh existing integrations. Codex integration v10 keeps session tracking but removes turn hooks; Herdr detects Codex status from the terminal screen. Claude integration v11 fixes reporting in named sessions.
+When upgrading to Herdr 0.9.5, rerun these commands or use `:HerdrUpdateAll` to refresh existing integrations. Codex integration v10 keeps session tracking but removes turn hooks; Herdr detects Codex status from the terminal screen. Claude integration v11 fixes reporting in named sessions.
 
 ## Installation
 
@@ -69,45 +74,51 @@ With lazy.nvim or LazyVim:
 
 ```lua
 {
-  "nwiizo/signalbox.nvim",
+  "nwiizo/herdr.nvim",
   event = "VeryLazy",
   cmd = {
-    "Signalbox",
-    "SignalboxRefresh",
-    "SignalboxUpdateAll",
-    "SignalboxStart",
-    "SignalboxResume",
-    "SignalboxAttach",
-    "SignalboxPrompt",
-    "SignalboxRename",
-    "SignalboxSendVisual",
-    "SignalboxSendFile",
-    "SignalboxSendDiagnostics",
-    "SignalboxHealth",
+    "Herdr",
+    "HerdrRefresh",
+    "HerdrUpdateAll",
+    "HerdrStart",
+    "HerdrResume",
+    "HerdrAttach",
+    "HerdrPrompt",
+    "HerdrRename",
+    "HerdrSendVisual",
+    "HerdrSendFile",
+    "HerdrSendDiagnostics",
+    "HerdrHealth",
   },
   keys = {
-    { "<C-g>", "<cmd>Signalbox<cr>", mode = { "n", "t" }, desc = "Agent Signalbox" },
+    { "<C-g>", "<cmd>Herdr<cr>", mode = { "n", "t" }, desc = "Herdr agents" },
   },
   opts = {},
 }
 ```
 
-`<C-g>` is only a recommendation. Signalbox defines no global mappings itself.
-`event = "VeryLazy"` starts background monitoring before the board is first opened; commands and keys can still load it earlier. With the default `auto_start_server = true`, it may also start the detached Herdr server on Neovim launch. Omit the event if you want Signalbox and Herdr to start only on demand and do not need ambient notifications.
+`<C-g>` is only a recommendation. herdr.nvim defines no global mappings itself.
+`event = "VeryLazy"` starts background monitoring before the board is first opened; commands and keys can still load it earlier. With the default `auto_start_server = true`, it may also start the detached Herdr server on Neovim launch. Omit the event if you want herdr.nvim and Herdr to start only on demand and do not need ambient notifications.
+
+### Migrating from signalbox.nvim
+
+Update the plugin spec to `nwiizo/herdr.nvim` and move any local `dir` checkout to `herdr.nvim`. Replace `require("signalbox")` and its submodules with `require("herdr")`, `:Signalbox*` commands with `:Herdr*`, and `:checkhealth signalbox` with `:checkhealth herdr`.
+
+Custom `User` autocmds now use `HerdrUpdated` and `HerdrAgentStatusChanged`; highlight groups use the `Herdr` prefix. Plugin filetypes and buffer names use `herdr`, and the status component displays `Herdr !1 ✓1`. Setup options and `<C-g>` are unchanged. Restart Neovim after updating; the old module and command names are not aliases. Herdr's persisted sessions need no migration.
 
 ## Workflow
 
-Open the board with `:Signalbox`.
+Open the board with `:Herdr`.
 
 <p align="center">
-  <img src="assets/signalbox-demo.gif" alt="Opening and closing the Signalbox attention board in Neovim">
+  <img src="assets/herdr-demo.gif" alt="Opening and closing the herdr.nvim attention board in Neovim">
 </p>
 
 ```text
-╭───── [1]-Signalbox  !1  ✓1 ───────╮ ╭───── [2]-Preview · reviewer · read-only ─╮
+╭───── [1]-Herdr  !1  ✓1 ─────────────╮ ╭───── [2]-Preview · reviewer · read-only ─╮
 │ this project + attention elsewhere │ │ ...                                      │
 │ A: 2 working elsewhere             │ │ The agent is waiting for approval to     │
-│ signalbox.nvim                     │ │ update the public API.                   │
+│ herdr.nvim                         │ │ update the public API.                   │
 │ ! reviewer       claude  blocked   │ │                                          │
 │ * implementation codex   working   │ │                                          │
 │ ✓ tests          codex   done      │ │                                          │
@@ -129,6 +140,7 @@ Board mappings are buffer-local:
 | `g`          | Open Snacks Lazygit at the selected agent's repository                                        |
 | `d`          | Open Diffview at the selected agent's repository                                              |
 | `v`          | Toggle recent-output preview                                                                  |
+| `P`          | Pause / resume output updates while reading or copying                                        |
 | `A`          | Toggle default attention view / all agents                                                    |
 | `r`          | Refresh immediately                                                                           |
 | `q`          | Close                                                                                         |
@@ -142,13 +154,13 @@ Space groups are ordered by their most urgent visible agent: blocked, done, work
 
 Use `j` / `k` to move between agents without stopping on Space headings or blank rows. Movement stops at the first or last agent. `1` / `2` remain direct pane switches.
 
-After reviewing a completed agent, press `x` from either pane to hide that completion from the default view and attention counts. `A` still shows it. Opening its preview does not acknowledge it. A new Herdr completion number or an observed transition out of `done` clears the acknowledgement, so its next completion appears again. Herdr 0.9.5 supplies completion numbers, allowing Signalbox to detect work completed between polls and notify once per completion even when the terminal revision stays unchanged. Older servers without this field need an observed transition out of `done`. Acknowledgements stay in memory and reset when Neovim restarts; Herdr's state is unchanged.
+After reviewing a completed agent, press `x` from either pane to hide that completion from the default view and attention counts. `A` still shows it. Opening its preview does not acknowledge it. A new Herdr completion number or an observed transition out of `done` clears the acknowledgement, so its next completion appears again. Herdr 0.9.5 supplies completion numbers, allowing herdr.nvim to detect work completed between polls and notify once per completion even when the terminal revision stays unchanged. Older servers without this field need an observed transition out of `done`. Acknowledgements stay in memory and reset when Neovim restarts; Herdr's state is unchanged.
 
 An empty board distinguishes no agents, agents outside the current project, reviewed completions, and a failed refresh. It offers the relevant next action and `q` to return to editing. Reviewing all completions does not suggest starting another task.
 
-Before sending an instruction or editor context, Signalbox fetches a fresh snapshot and resolves the same terminal's current pane. If the agent disappears, its kind or registered name changes, or verification fails, nothing is sent. The instruction stays in a memory-only draft buffer; the notification gives a `:buffer N` command to recover it after closing the board. If submission itself fails, delivery may be uncertain: inspect the agent before explicitly retrying. Drafts are never replayed automatically or saved to disk, and are lost when Neovim exits.
+Before sending an instruction or editor context, herdr.nvim fetches a fresh snapshot and resolves the same terminal's current pane. If the agent disappears, its kind or registered name changes, or verification fails, nothing is sent. The instruction stays in a memory-only draft buffer; the notification gives a `:buffer N` command to recover it after closing the board. If submission itself fails, delivery may be uncertain: inspect the agent before explicitly retrying. Drafts are never replayed automatically or saved to disk, and are lost when Neovim exits.
 
-For a `blocked` agent, inspect its approval or question in the preview, then press `i` or `<CR>` to answer in its native terminal. Herdr rejects ordinary prompts to blocked agents without sending input. Signalbox checks for this before opening the instruction input and again before sending. If the agent becomes blocked while you write, your text remains in a draft and the notification identifies the attach command. A server-side `agent_blocked` rejection also means the instruction was not sent. See [Herdr's agent input rules](https://herdr.dev/docs/agent-automation/#choose-the-control-surface).
+For a `blocked` agent, inspect its approval or question in the preview, then press `i` or `<CR>` to answer in its native terminal. Herdr rejects ordinary prompts to blocked agents without sending input. herdr.nvim checks for this before opening the instruction input and again before sending. If the agent becomes blocked while you write, your text remains in a draft and the notification identifies the attach command. A server-side `agent_blocked` rejection also means the instruction was not sent. See [Herdr's agent input rules](https://herdr.dev/tui/docs/agent-automation/#choose-the-control-surface).
 
 Press `?` for an `INPUT → RESULT` guide that explains the text or key to enter and the resulting action, including cross-Space attach and returning from an attached terminal. If the recent-output preview is hidden, the guide opens the right pane temporarily; pressing `?` again restores the previous preview setting.
 
@@ -162,69 +174,73 @@ Controls depend on the focused window and mode:
 | Attached terminal, input mode | Type into the agent; Page Up / Page Down scroll Herdr history. Normal input returns to the bottom. | `<C-g>` or Herdr's `Ctrl-b`, then `q`, detaches and returns to the board. |
 | Attached terminal, Neovim Normal mode | Enter this mode with `<C-\><C-n>` to select and copy terminal text. | `i` resumes input; `<C-g>` returns to the board. |
 
-Input and picker bindings belong to your configured UI provider; Signalbox keeps them intact. The terminal modes and direct-attach keys follow the [Neovim terminal manual](https://neovim.io/doc/user/terminal/#terminal-input), [Herdr direct-attach guide](https://herdr.dev/docs/agents/#attach-directly-to-an-agent), and [Snacks input defaults](https://github.com/folke/snacks.nvim/blob/main/docs/input.md). In terminal input mode, press `Ctrl-b` twice to send one literal Ctrl-b to the agent. Herdr's native detach returns automatically when its terminal is focused; a background attach client exiting does not interrupt the window you are using.
+Input and picker bindings belong to your configured UI provider; herdr.nvim keeps them intact. The terminal modes and direct-attach keys follow the [Neovim terminal manual](https://neovim.io/doc/user/terminal/#terminal-input), [Herdr direct-attach guide](https://herdr.dev/tui/docs/agents/#attach-directly-to-an-agent), and [Snacks input defaults](https://github.com/folke/snacks.nvim/blob/main/docs/input.md). In terminal input mode, press `Ctrl-b` twice to send one literal Ctrl-b to the agent. Herdr's native detach returns automatically when its terminal is focused; a background attach client exiting does not interrupt the window you are using.
 
-Codex or Claude Code may show an update, trust, hook, login, or other setup screen before it can accept an instruction. Signalbox asks Herdr to confirm that the initial prompt made the agent start working. If Herdr reports `agent_prompt_stalled`, Signalbox warns immediately and keeps the instruction in memory. Clear the provider screen, return with `<C-g>`, select the agent, and press `p`; the original instruction is already filled in, so Enter retries it. The draft is discarded once work begins and is never written to disk.
+Codex or Claude Code may show an update, trust, hook, login, or other setup screen before it can accept an instruction. herdr.nvim asks Herdr to confirm that the initial prompt made the agent start working. If Herdr reports `agent_prompt_stalled`, herdr.nvim warns immediately and keeps the instruction in memory. Clear the provider screen, return with `<C-g>`, select the agent, and press `p`; the original instruction is already filled in, so Enter retries it. The draft is discarded once work begins and is never written to disk.
 
-Herdr can still misclassify Codex setup screens. The repository trust screen reproduced this with Herdr 0.9.0 / Codex 0.153.4, and the initial hook-review screen did so with Herdr 0.9.5 / Codex 0.163.0. In that case, opening a setup menu may look like a successful working transition even though the instruction was not delivered, so no retry draft is available. Finish setup in the attached terminal and resend the instruction. Signalbox does not duplicate Herdr's provider-screen detection.
+Herdr can still misclassify Codex setup screens. The repository trust screen reproduced this with Herdr 0.9.0 / Codex 0.153.4, and the initial hook-review screen did so with Herdr 0.9.5 / Codex 0.163.0. In that case, opening a setup menu may look like a successful working transition even though the instruction was not delivered, so no retry draft is available. Finish setup in the attached terminal and resend the instruction. herdr.nvim does not duplicate Herdr's provider-screen detection.
 
 The right pane is deliberately a read-only, ephemeral view of recent output. Its title says `read-only`; press `i` or `<CR>` from either pane to replace the board with an interactive Herdr terminal in insert mode.
 
+To read or copy stable output, wait for the preview to load and press `P`. Its title changes to `paused`; use `2` to focus it, then scroll, select, and yank with normal Neovim keys. In-flight reads cannot replace the frozen text. Agent execution, status updates, and notifications continue. Press `P` again to fetch current output. The guide can be opened and closed without losing the frozen text; selecting another agent, switching to the state explanation, or closing the board resumes normal preview behavior. This creates no transcript file.
+
+If a refresh or server check fails temporarily, herdr.nvim keeps the last good snapshot marked stale and retries at the configured polling interval. Missing executables and incompatible protocols stop automatic retries; resolve the problem, then use `:HerdrRefresh`. With `auto_start_server = false`, retrying never starts the server.
+
 When Neovim itself runs inside Herdr and the selected agent belongs to another Space, attach first moves the Herdr pane hosting Neovim into that Space and follows it. Herdr keeps the Neovim process running during the move. Neovim instances outside Herdr attach without moving a pane.
 
-Use `<C-g>` (`Ctrl-g`) as the single Signalbox key. In a normal editor buffer it opens the board and starts Herdr on demand; in a Signalbox-attached terminal its buffer-local mapping takes priority, detaches the Neovim client, leaves the Herdr agent running, and returns to that same agent on the board. If the agent is outside the default filter, the board switches to all agents to reveal it. If it has disappeared, the board selects the first visible agent. A single control chord has no mapping timeout in which Codex or Claude Code can consume a partial sequence. The terminal key is configurable with `terminal.return_key`.
+Use `<C-g>` (`Ctrl-g`) as the single herdr.nvim key. In a normal editor buffer it opens the board and starts Herdr on demand; in a herdr.nvim-attached terminal its buffer-local mapping takes priority, detaches the Neovim client, leaves the Herdr agent running, and returns to that same agent on the board. If the agent is outside the default filter, the board switches to all agents to reveal it. If it has disappeared, the board selects the first visible agent. A single control chord has no mapping timeout in which Codex or Claude Code can consume a partial sequence. The terminal key is configurable with `terminal.return_key`.
 
 ## Commands
 
 | Command                              | Description                                                                          |
 | ------------------------------------ | ------------------------------------------------------------------------------------ |
-| `:Signalbox`                         | Toggle the attention board                                                           |
-| `:SignalboxRefresh`                  | Refresh Herdr state immediately                                                      |
-| `:SignalboxUpdateAll`                | Live-handoff an outdated server, update configured integrations, and update manifests |
-| `:SignalboxStart [codex\|claude]`    | Assign an unused project-based name, enter the first instruction, start, and attach     |
-| `:SignalboxResume [codex\|claude]`   | Open the provider's resume picker inside Herdr and attach                            |
-| `:SignalboxAttach[!] [target]`       | Attach; `!` explicitly takes over another direct client                              |
-| `:SignalboxPrompt [target]`          | Prompt an agent                                                                      |
-| `:SignalboxRename [target]`          | Give an agent a stable role name                                                     |
-| `:[range]SignalboxPrompt [target]`   | Prompt with complete lines from a range                                              |
-| `:'<,'>SignalboxSendVisual [target]` | Prompt with the exact visual selection                                               |
-| `:SignalboxSendFile [target]`        | Send the saved current-file reference                                                |
-| `:SignalboxSendDiagnostics [target]` | Send current-buffer LSP diagnostics                                                  |
-| `:SignalboxHealth`                   | Run `:checkhealth signalbox`                                                         |
+| `:Herdr`                         | Toggle the attention board                                                           |
+| `:HerdrRefresh`                  | Refresh Herdr state immediately                                                      |
+| `:HerdrUpdateAll`                | Live-handoff an outdated server, update configured integrations, and update manifests |
+| `:HerdrStart [codex\|claude]`    | Assign an unused project-based name, enter the first instruction, start, and attach     |
+| `:HerdrResume [codex\|claude]`   | Open the provider's resume picker inside Herdr and attach                            |
+| `:HerdrAttach[!] [target]`       | Attach; `!` explicitly takes over another direct client                              |
+| `:HerdrPrompt [target]`          | Prompt an agent                                                                      |
+| `:HerdrRename [target]`          | Give an agent a stable role name                                                     |
+| `:[range]HerdrPrompt [target]`   | Prompt with complete lines from a range                                              |
+| `:'<,'>HerdrSendVisual [target]` | Prompt with the exact visual selection                                               |
+| `:HerdrSendFile [target]`        | Send the saved current-file reference                                                |
+| `:HerdrSendDiagnostics [target]` | Send current-buffer LSP diagnostics                                                  |
+| `:HerdrHealth`                   | Run `:checkhealth herdr`                                                         |
 
 Targets accept stable terminal IDs, current pane IDs, or an unambiguous agent name.
 
 ## Rehome an existing conversation
 
-Use `R` on the board or `:SignalboxResume codex` / `:SignalboxResume claude` when a conversation that started outside Herdr should become persistent and observable. Exit the original Codex or Claude Code client first. Signalbox never kills it or attempts to move its live process.
+Use `R` on the board or `:HerdrResume codex` / `:HerdrResume claude` when a conversation that started outside Herdr should become persistent and observable. Exit the original Codex or Claude Code client first. herdr.nvim never kills it or attempts to move its live process.
 
-After confirmation, Signalbox creates a Herdr-managed pane, opens the provider's native resume picker, and attaches immediately. Select the exact saved conversation there; Signalbox deliberately does not choose the latest session because multiple conversations may share one repository. Current Herdr integrations then report the native session identity so Herdr can restore that conversation after a server restart.
+After confirmation, herdr.nvim creates a Herdr-managed pane, opens the provider's native resume picker, and attaches immediately. Select the exact saved conversation there; herdr.nvim deliberately does not choose the latest session because multiple conversations may share one repository. Current Herdr integrations then report the native session identity so Herdr can restore that conversation after a server restart.
 
-`:checkhealth signalbox` reads Herdr's active detection-manifest status without changing it. A missing check time or one older than seven days is a warning with the explicit `herdr server update-agent-manifests` recovery command; local overrides are reported separately because they intentionally shadow remote rules.
+`:checkhealth herdr` reads Herdr's active detection-manifest status without changing it. A missing check time or one older than seven days is a warning with the explicit `herdr server update-agent-manifests` recovery command; local overrides are reported separately because they intentionally shadow remote rules.
 
-`:SignalboxUpdateAll` is the explicit maintenance path. It preserves panes by live-handoffing only when the running server is incompatible, installs outdated or missing Codex/Claude integrations that are present in `agents`, then updates Herdr's detection manifests. With Herdr 0.9+, endpoint compatibility determines whether the server can stay running, independently of its private protocol version; older clients retain their protocol check. It does not install or upgrade the Herdr binary because Signalbox does not own its package manager.
+`:HerdrUpdateAll` is the explicit maintenance path. It preserves panes by live-handoffing only when the running server is incompatible, installs outdated or missing Codex/Claude integrations that are present in `agents`, then updates Herdr's detection manifests. With Herdr 0.9+, endpoint compatibility determines whether the server can stay running, independently of its private protocol version; older clients retain their protocol check. It does not install or upgrade the Herdr binary because herdr.nvim does not own its package manager.
 
 ## Ambient status
 
 `statusline()` returns only states that need attention:
 
 ```lua
-require("signalbox").statusline()
--- "SB !1 ✓1" or "" when there is nothing to handle
+require("herdr").statusline()
+-- "Herdr !1 ✓1" or "" when there is nothing to handle
 ```
 
-It can be used from Incline, lualine, or another renderer after Signalbox is loaded. `~` marks last-known data after a refresh failure.
+It can be used from Incline, lualine, or another renderer after herdr.nvim is loaded. `~` marks last-known data after a refresh failure.
 
 ## Notifications
 
-Signalbox observes Herdr's semantic agent state and sends a Neovim notification once when an agent changes to `blocked` or `done`. It does not forward Herdr's own toast. The initial snapshot stays quiet, while `statusline()` and the board still expose existing attention.
+herdr.nvim observes Herdr's semantic agent state and sends a Neovim notification once when an agent changes to `blocked` or `done`. It does not forward Herdr's own toast. The initial snapshot stays quiet, while `statusline()` and the board still expose existing attention.
 
-Blocked notifications are suppressed while the board is open or the matching live attached terminal is focused because the approval state is already visible. Completion notifications are always delivered through the current `vim.notify` provider, including while an attention surface is visible. Closing a surface alone does not replay a suppressed blocked event; if the agent leaves the attention state and later returns, the new transition can notify normally. An already delivered notification stays deduplicated for the same Herdr revision. Herdr's `[ui.toast]` delivery is configured independently; enabling both a Herdr desktop/terminal toast and Signalbox notifications intentionally produces two notification surfaces.
+Blocked notifications are suppressed while the board is open or the matching live attached terminal is focused because the approval state is already visible. Completion notifications are always delivered through the current `vim.notify` provider, including while an attention surface is visible. Closing a surface alone does not replay a suppressed blocked event; if the agent leaves the attention state and later returns, the new transition can notify normally. An already delivered notification stays deduplicated for the same Herdr revision. Herdr's `[ui.toast]` delivery is configured independently; enabling both a Herdr desktop/terminal toast and herdr.nvim notifications intentionally produces two notification surfaces.
 
 ## Configuration
 
 ```lua
-require("signalbox").setup({
+require("herdr").setup({
   herdr_cmd = "herdr",
   auto_start_server = true,
   agent_start_timeout_ms = 30000,
@@ -272,11 +288,11 @@ agents = {
 - File references reject unnamed and modified buffers.
 - Closing Neovim stops only local attach clients, never Herdr agents or its server.
 - Moving Neovim out of a Space where it is the last pane lets Herdr close that now-empty source Space.
-- Signalbox cannot adopt a live process from a terminal Herdr does not own; stop that client, then use `:SignalboxResume`.
+- herdr.nvim cannot adopt a live process from a terminal Herdr does not own; stop that client, then use `:HerdrResume`.
 - Resume rehomes saved conversation state, not a running process; stop the original client before selecting its session.
-- Current-project filtering uses the Git root. Outside a Git worktree, Signalbox matches the exact working directory.
-- Signalbox currently refreshes snapshots on a short adaptive poll. Herdr socket events are the next transport milestone.
-- Signalbox observes one Herdr server selected by the CLI environment. Herdr 0.9's combined Local/SSH machine list is not aggregated into the board; switching machines in Herdr does not retarget Signalbox.
+- Current-project filtering uses the Git root. Outside a Git worktree, herdr.nvim matches the exact working directory.
+- herdr.nvim currently refreshes snapshots on a short adaptive poll. Herdr socket events are the next transport milestone.
+- herdr.nvim observes one Herdr server selected by the CLI environment. Herdr 0.9's combined Local/SSH machine list is not aggregated into the board; switching machines in Herdr does not retarget herdr.nvim.
 - Agent-to-Neovim MCP tools and native diff review are deliberately out of scope for v0.1.
 - Windows is not supported in v0.1.
 
@@ -293,6 +309,7 @@ make check
 ```
 
 Tests run in a clean headless Neovim and do not require a test framework plugin.
+They clear inherited Herdr pane context so running them inside Herdr cannot move your pane. See [verification and disposable TUI tests](docs/testing.md) for the real CLI and UI checks.
 
 ## License
 

@@ -1,5 +1,5 @@
-local config = require("signalbox.config")
-local compatibility = require("signalbox.compatibility")
+local config = require("herdr.config")
+local compatibility = require("herdr.compatibility")
 
 local M = {}
 
@@ -759,7 +759,7 @@ check_server = function(callback)
     if status_kind ~= "compatible" then
       callback(false, {
         kind = "protocol",
-        message = "Herdr did not report compatibility with this client; update Herdr and run :checkhealth signalbox",
+        message = "Herdr did not report compatibility with this client; update Herdr and run :checkhealth herdr",
       })
       return
     end

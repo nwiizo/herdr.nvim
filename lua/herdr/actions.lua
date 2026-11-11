@@ -14,13 +14,13 @@ function M.lazygit(agent, fallback)
     snacks.lazygit.open({ cwd = cwd_for(agent, fallback) })
     return true
   end
-  vim.notify("Snacks.lazygit is unavailable", vim.log.levels.WARN, { title = "Signalbox" })
+  vim.notify("Snacks.lazygit is unavailable", vim.log.levels.WARN, { title = "Herdr" })
   return false
 end
 
 function M.diffview(agent, fallback)
   if vim.fn.exists(":DiffviewOpen") ~= 2 then
-    vim.notify("DiffviewOpen is unavailable", vim.log.levels.WARN, { title = "Signalbox" })
+    vim.notify("DiffviewOpen is unavailable", vim.log.levels.WARN, { title = "Herdr" })
     return false
   end
   vim.cmd("DiffviewOpen -C" .. vim.fn.fnameescape(cwd_for(agent, fallback)))

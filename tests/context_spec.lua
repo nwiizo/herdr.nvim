@@ -1,6 +1,6 @@
 local h = require("tests.harness")
-local config = require("signalbox.config")
-local context = require("signalbox.context")
+local config = require("herdr.config")
+local context = require("herdr.context")
 
 local function buffer(lines, name, filetype)
   local bufnr = vim.api.nvim_create_buf(true, false)
