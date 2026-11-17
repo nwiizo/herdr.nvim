@@ -55,3 +55,55 @@ rtk proxy env HERDR_SOCKET_PATH="$tui_test_root/herdr.sock" herdr server stop
 ```
 
 Keep failed-test logs outside Git. The test covers plugin behavior with controlled state reports; it does not validate an AI provider's screen detection.
+
+## Disposable saved-machine smoke test
+
+`tests/machine_smoke.lua` exercises watched saved machines through real `herdr --machine` forwarding without a second host. A test-only `ssh` runs the remote command locally under a separate remote `HOME`, as Herdr's own machine API tests do. The script checks merged attention, qualified targets, remote notification, preview, rename, prompt and start routing, offline isolation and retry, and remote session attach with return to the same agent. It closes only the workspaces it creates.
+
+Use a short directory, because macOS limits Unix socket paths to 104 bytes. The setup uses `herdr machine add`, so the remote server starts the way a real saved machine does:
+
+```sh
+machine_test_root=$(rtk proxy mktemp -d /tmp/hnm.XXXXXX)
+rtk proxy mkdir -p "$machine_test_root/home" "$machine_test_root/config" "$machine_test_root/state" \
+  "$machine_test_root/bin" "$machine_test_root/remote bin" \
+  "$machine_test_root/rhome/.config" "$machine_test_root/rhome/.state" "$machine_test_root/rhome/project"
+rtk proxy tee "$machine_test_root/bin/ssh" <<'SH'
+#!/bin/sh
+# Test-only ssh: runs the requested remote command locally with a separate remote HOME.
+for arg do last=$arg; done
+if [ -e "$TEST_ROOT/offline" ]; then echo 'test remote connection failed' >&2; exit 255; fi
+export PATH="$TEST_ROOT/remote bin:/usr/bin:/bin" HOME="$TEST_ROOT/rhome" \
+  XDG_CONFIG_HOME="$TEST_ROOT/rhome/.config" XDG_STATE_HOME="$TEST_ROOT/rhome/.state"
+unset HERDR_SOCKET_PATH HERDR_SESSION HERDR_PANE_ID HERDR_ENV
+case "$last" in
+  '/bin/sh -s') exec /bin/sh -s ;;
+  *) exec /bin/sh -c "$last" ;;
+esac
+SH
+rtk proxy chmod 700 "$machine_test_root/bin/ssh"
+rtk proxy ln -s "$(command -v herdr)" "$machine_test_root/remote bin/herdr"
+```
+
+Write the same `config.toml` as the TUI smoke test into `$machine_test_root/config.toml`. Then run every command below from the plugin checkout in a clean environment, which keeps your real Herdr session, socket, and saved machines out of reach:
+
+```sh
+machine_env() {
+  rtk proxy env -i PATH="$machine_test_root/bin:$(dirname "$(command -v herdr)"):/usr/bin:/bin" \
+    HOME="$machine_test_root/home" XDG_CONFIG_HOME="$machine_test_root/config" \
+    XDG_STATE_HOME="$machine_test_root/state" HERDR_CONFIG_PATH="$machine_test_root/config.toml" \
+    HERDR_SOCKET_PATH="$machine_test_root/local.sock" TEST_ROOT="$machine_test_root" \
+    HERDR_NVIM_MACHINE_TEST_ROOT="$machine_test_root" TERM=xterm-256color "$@"
+}
+machine_env herdr server >"$machine_test_root/server.log" 2>&1 &
+machine_env herdr machine add fake-mac --label fake --remote-session fleet </dev/null
+machine_env nvim --headless --clean -u tests/minimal_init.lua -l tests/machine_smoke.lua
+```
+
+Success prints `MACHINE_SMOKE_OK`. For the actual UI, follow the same isolated-config approach as the TUI smoke test, keep this environment's `HOME`, XDG state, and Herdr variables, and trigger `UIEnter` before opening pickers so a lazy-loaded UI provider replaces `vim.ui.select`. Stop both disposable servers afterward, including after a failure:
+
+```sh
+machine_env herdr --machine fake server stop
+machine_env herdr server stop
+```
+
+The machine smoke test does not cover real SSH authentication, network latency, or a remote host's own Herdr installation. Check those with `:checkhealth herdr` against a real saved machine.

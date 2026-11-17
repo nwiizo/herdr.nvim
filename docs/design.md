@@ -39,7 +39,7 @@ This plugin targets Herdr TUI and its `herdr` CLI. Herdr app / herdr-core have a
 | Neovim buffer/range/diagnostic context | herdr.nvim |
 | Repository inspection | Snacks Lazygit / Diffview |
 
-herdr.nvim stores no transcript and no duplicate session database. `terminal_id` is its stable in-memory key; actions use the latest `pane_id`, because that is the current Herdr command target. Herdr owns prompt delivery and reports whether the initial instruction made the agent start working. herdr.nvim keeps that instruction only as an in-memory recovery draft when delivery stalls.
+herdr.nvim stores no transcript and no duplicate session database. Its stable in-memory key is the agent key: `terminal_id` for Local, or `terminal_id@machine` for a watched saved machine, because Herdr scopes IDs and names to one server. Actions use the latest `pane_id` on the agent's own machine, because that is the current Herdr command target. Herdr owns prompt delivery and reports whether the initial instruction made the agent start working. herdr.nvim keeps that instruction only as an in-memory recovery draft when delivery stalls.
 
 ## Interaction sequence
 
@@ -86,7 +86,26 @@ The current compatibility and attach fixes support the same job: keep compatible
 
 Prompt delivery at provider setup screens remains a separate upstream detection limitation. herdr.nvim already retains instructions when Herdr reports `agent_prompt_stalled`; a reported success is not sufficient evidence for automatic replay. Validate future Herdr fixes with a disposable first-run provider session before changing this behavior.
 
-Event subscriptions should follow these interaction fixes unless polling latency is observed to delay intervention. Their success criterion is timely, complete attention updates across reconnects, with snapshot recovery and polling fallback. Multi-machine aggregation needs a demonstrated cross-machine job and explicit machine targeting before adding another connection layer. A second transcript store has no demonstrated role in this intervention sequence.
+Event subscriptions should follow these interaction fixes unless polling latency is observed to delay intervention. Their success criterion is timely, complete attention updates across reconnects, with snapshot recovery and polling fallback. A second transcript store has no demonstrated role in this intervention sequence.
+
+## Agents on saved machines
+
+The cross-machine job is the same intervention job with work delegated to more than one host:
+
+> When agents run on another machine as well as this one, show their interventions in the same inbox and act on the intended machine's agent, without switching Herdr views or re-deriving where a target lives.
+
+Herdr 0.9.1 provides the explicit targeting this needed: `herdr --machine <label-or-id>` forwards API commands to a saved SSH machine. herdr.nvim adds no connection layer of its own. A watched machine is another snapshot source, and every request for a remote agent carries that agent's machine.
+
+Design decisions:
+
+- **Opt-in sources.** `machines` lists saved profiles. Local stays implicit, and an empty list keeps the original single-server behavior. Automatically following every enabled Herdr profile would start SSH traffic from every Neovim instance without an explicit choice; `:checkhealth herdr` instead lists unwatched profiles.
+- **One inbox.** Snapshots merge in source order, so Local Spaces precede remote Spaces at equal urgency. The existing urgency ordering then spans machines. Remote headings carry `machine ›`, while a Local-only board looks unchanged.
+- **Identity.** Agent keys qualify remote terminal IDs. Acknowledgements, notification deduplication, selection, retry drafts, and terminal records use keys. User-facing targets accept `name@machine`. Unqualified targets prefer Local, matching Herdr's CLI default, so adding a machine does not silently retarget an existing Local command.
+- **Failure isolation.** Sources refresh in parallel and are applied on arrival. A failing machine keeps its last view, reports its error on the board, and backs off from 5 to 30 seconds; an explicit refresh retries immediately. Local polling continues, and Local's server check never gates a remote action.
+- **Honest attach.** Herdr does not forward `agent attach`. herdr.nvim does not guess remote binary paths or construct SSH commands. Instead it opens Herdr's supported `herdr --remote` session for the machine and states which agent to select. It deliberately avoids `agent focus` because that marks completions as seen in Herdr, and herdr.nvim does not change Herdr's completion state implicitly.
+- **Paths belong to machines.** Local paths never match remote cwds in the project filter. Remote editor context uses project-relative paths. Remote starts target existing remote Spaces with absolute cwds from that machine's snapshot, because Herdr does not expand `~` for remote workspace or tab creation.
+
+Herdr's own machine federation remains in Herdr. herdr.nvim neither routes through another TUI's connections nor installs, starts, or restarts remote servers.
 
 ## Reading output and recovering monitoring
 

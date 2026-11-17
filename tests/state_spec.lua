@@ -4,6 +4,7 @@ local state = require("herdr.state")
 
 local function agent(id, status, workspace, revision, cwd)
   return {
+    key = id,
     terminal_id = id,
     target = id,
     status = status,

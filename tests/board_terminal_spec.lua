@@ -7,6 +7,7 @@ local terminal = require("herdr.terminal")
 
 local function agent(id, status, workspace, cwd)
   return {
+    key = id,
     terminal_id = id,
     target = "pane-" .. id,
     status = status,

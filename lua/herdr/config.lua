@@ -9,6 +9,8 @@ local defaults = {
     codex = { args = {} },
     claude = { args = {} },
   },
+  -- Saved Herdr SSH machines (labels or profile IDs) watched alongside Local.
+  machines = {},
   refresh = {
     board_ms = 1000,
     background_ms = 5000,
@@ -112,6 +114,23 @@ local function validate(config)
       fail("agents." .. kind, "a table")
     end
     validate_list(agent.args or {}, "agents." .. kind .. ".args")
+  end
+
+  if type(config.machines) ~= "table" or not vim.islist(config.machines) then
+    fail("machines", "a list of saved Herdr machine labels or IDs")
+  end
+  local seen_machines = {}
+  for index, machine in ipairs(config.machines) do
+    local path = string.format("machines[%d]", index)
+    validate_string(machine, path)
+    -- Agent references use name@machine, so a selector cannot contain the separator.
+    if machine:find("@", 1, true) then
+      fail(path, "a saved machine label or ID without '@'")
+    end
+    if seen_machines[machine] then
+      fail(path, "unique")
+    end
+    seen_machines[machine] = true
   end
 
   if type(config.refresh) ~= "table" then

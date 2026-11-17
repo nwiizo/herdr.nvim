@@ -80,9 +80,9 @@ jobs:
                 `herdr.nvim is currently verified against **${verified}**.\n\n` +
                 `## Compatibility checklist\n\n` +
                 `- [ ] Review upstream release notes and socket/API changes\n` +
-                `- [ ] Compare \`api snapshot\`, \`agent prompt --wait\`, agent read sources, \`agent explain\`, \`agent rename\`, and \`server agent-manifests\` contracts\n` +
+                `- [ ] Compare \`api snapshot\`, \`agent prompt --wait\`, agent read sources, \`agent explain\`, \`agent rename\`, \`server agent-manifests\`, and \`--machine\` forwarding contracts\n` +
                 `- [ ] Run \`make check\` with Herdr ${tag}\n` +
-                `- [ ] Run the real snapshot, idle/active preview, explain, rename, board, start, prompt-stall recovery, attach, manifest-health, and cleanup smoke tests\n` +
+                `- [ ] Run the real snapshot, idle/active preview, explain, rename, board, start, prompt-stall recovery, attach, manifest-health, saved-machine, and cleanup smoke tests\n` +
                 `- [ ] Update the verified version in \`lua/herdr/compatibility.lua\`, README, \`docs/upstream-herdr.md\`, and this workflow\n` +
                 `- [ ] Record any migration or compatibility shim in \`docs/upstream-herdr.md\`\n`,
             });

@@ -92,10 +92,23 @@ local function default_job_starter(command)
   return result
 end
 
-local function executable_argv(args)
+-- `machine` is a saved Herdr SSH machine selector; nil keeps the inherited Local session.
+local function executable_argv(args, machine)
   local result = { config.get().herdr_cmd }
+  if machine then
+    vim.list_extend(result, { "--machine", machine })
+  end
   vim.list_extend(result, args)
   return result
+end
+
+function M.agent_key(terminal_id, machine)
+  return machine and (terminal_id .. "@" .. machine) or terminal_id
+end
+
+-- Remote agents are shown and addressed as name@machine; Local agents keep their bare name.
+function M.agent_label(agent)
+  return agent.machine and (agent.name .. "@" .. agent.machine) or agent.name
 end
 
 local function process_error(result, command)
@@ -134,14 +147,16 @@ local function run(args, opts, callback)
   opts = opts or {}
   opts.timeout_ms = opts.timeout_ms or config.get().refresh.timeout_ms
   local process_runner = runner or default_runner
-  process_runner(executable_argv(args), opts, function(result)
+  process_runner(executable_argv(args, opts.machine), opts, function(result)
     if type(result) ~= "table" then
-      callback(nil, { kind = "internal", message = "process runner returned no result" })
+      callback(nil, { kind = "internal", message = "process runner returned no result", machine = opts.machine })
       return
     end
     if result.code ~= 0 then
       local safe_command = table.concat(vim.list_slice(args, 1, math.min(#args, 2)), " ")
-      callback(nil, process_error(result, safe_command))
+      local err = process_error(result, safe_command)
+      err.machine = opts.machine
+      callback(nil, err)
       return
     end
     callback(result)
@@ -158,9 +173,10 @@ local function run_json(args, opts, callback)
       callback(nil, err)
       return
     end
+    local machine = opts and opts.machine
     local ok, decoded = pcall(vim.json.decode, result.stdout or "")
     if not ok or type(decoded) ~= "table" then
-      callback(nil, { kind = "json", message = "Herdr returned invalid JSON" })
+      callback(nil, { kind = "json", message = "Herdr returned invalid JSON", machine = machine })
       return
     end
     if decoded.error ~= nil and decoded.error ~= vim.NIL then
@@ -168,14 +184,30 @@ local function run_json(args, opts, callback)
         kind = "api",
         message = decoded.error.message or decoded.error.code or "Herdr API error",
         code = decoded.error.code,
+        machine = machine,
       })
       return
     end
     if type(decoded.result) ~= "table" then
-      callback(nil, { kind = "json", message = "Herdr response is missing result" })
+      callback(nil, { kind = "json", message = "Herdr response is missing result", machine = machine })
       return
     end
     callback(decoded.result)
+  end)
+end
+
+local function run_json_list(args, callback)
+  run(args, {}, function(result, err)
+    if err then
+      callback(nil, err)
+      return
+    end
+    local ok, decoded = pcall(vim.json.decode, result.stdout or "")
+    if not ok or type(decoded) ~= "table" or not vim.islist(decoded) then
+      callback(nil, { kind = "json", message = "Herdr returned an invalid list" })
+      return
+    end
+    callback(decoded)
   end)
 end
 
@@ -193,7 +225,7 @@ local function required_string(value, field, index)
   return value
 end
 
-local function normalize_agent(agent, index)
+local function normalize_agent(agent, index, machine)
   if type(agent) ~= "table" then
     return nil, string.format("agent %d is not an object", index)
   end
@@ -227,6 +259,9 @@ local function normalize_agent(agent, index)
   local title = nullable(agent.title) or nullable(agent.terminal_title_stripped) or nullable(agent.terminal_title) or ""
 
   return {
+    -- IDs and names are scoped to one Herdr server; `key` identifies the agent across machines.
+    key = M.agent_key(terminal_id, machine),
+    machine = machine,
     terminal_id = terminal_id,
     workspace_id = workspace_id,
     tab_id = tab_id,
@@ -244,7 +279,7 @@ local function normalize_agent(agent, index)
   }
 end
 
-function M._normalize_snapshot(result)
+function M._normalize_snapshot(result, machine)
   if type(result) ~= "table" or result.type ~= "session_snapshot" or type(result.snapshot) ~= "table" then
     return nil, { kind = "schema", message = "Herdr response is not a session snapshot" }
   end
@@ -261,7 +296,7 @@ function M._normalize_snapshot(result)
 
   local agents = {}
   for index, agent in ipairs(source.agents) do
-    local normalized, message = normalize_agent(agent, index)
+    local normalized, message = normalize_agent(agent, index, machine)
     if not normalized then
       return nil, { kind = "schema", message = message }
     end
@@ -274,6 +309,7 @@ function M._normalize_snapshot(result)
       return nil, { kind = "schema", message = string.format("workspace %d is missing workspace_id", index) }
     end
     table.insert(workspaces, {
+      machine = machine,
       workspace_id = workspace.workspace_id,
       label = tostring(nullable(workspace.label) or workspace.workspace_id),
       focused = workspace.focused == true,
@@ -284,6 +320,7 @@ function M._normalize_snapshot(result)
   for _, pane in ipairs(source.panes or {}) do
     if type(pane) == "table" and type(pane.pane_id) == "string" and type(pane.workspace_id) == "string" then
       table.insert(panes, {
+        machine = machine,
         pane_id = pane.pane_id,
         workspace_id = pane.workspace_id,
         cwd = nullable(pane.foreground_cwd) or nullable(pane.cwd),
@@ -301,13 +338,16 @@ function M._normalize_snapshot(result)
   }
 end
 
-function M.snapshot(callback)
-  run_json({ "api", "snapshot" }, function(result, err)
+function M.snapshot(callback, machine)
+  run_json({ "api", "snapshot" }, { machine = machine }, function(result, err)
     if err then
       callback(nil, err)
       return
     end
-    local snapshot, normalize_err = M._normalize_snapshot(result)
+    local snapshot, normalize_err = M._normalize_snapshot(result, machine)
+    if normalize_err then
+      normalize_err.machine = machine
+    end
     callback(snapshot, normalize_err)
   end)
 end
@@ -346,7 +386,11 @@ local function workspace_for_cwd(snapshot, cwd)
   return nil
 end
 
-local function create_agent_pane(cwd, label, callback)
+-- A destination is { cwd, machine?, workspace_id? }. Remote paths come from that machine's
+-- snapshot because Herdr does not expand `~` for workspace or tab creation.
+local function create_agent_pane(destination, label, callback)
+  local cwd = destination.cwd
+  local machine = destination.machine
   M.snapshot(function(snapshot, snapshot_err)
     if snapshot_err then
       callback(nil, snapshot_err)
@@ -357,11 +401,27 @@ local function create_agent_pane(cwd, label, callback)
         callback(nil, {
           kind = "validation",
           message = string.format("agent name %q is already in use; attach to it or choose another name", label),
+          machine = machine,
         })
         return
       end
     end
-    local workspace_id = workspace_for_cwd(snapshot, cwd)
+    local workspace_id = destination.workspace_id
+    if workspace_id then
+      local exists = vim.iter(snapshot.workspaces or {}):any(function(workspace)
+        return workspace.workspace_id == workspace_id
+      end)
+      if not exists then
+        callback(nil, {
+          kind = "validation",
+          message = "the selected Herdr Space was closed; choose the destination again",
+          machine = machine,
+        })
+        return
+      end
+    elseif not machine then
+      workspace_id = workspace_for_cwd(snapshot, cwd)
+    end
     local args
     local resource_kind
     if workspace_id then
@@ -371,7 +431,7 @@ local function create_agent_pane(cwd, label, callback)
       resource_kind = "workspace"
       args = { "workspace", "create", "--cwd", cwd, "--label", vim.fn.fnamemodify(cwd, ":t"), "--no-focus" }
     end
-    run_json(args, function(result, err)
+    run_json(args, { machine = machine }, function(result, err)
       if err then
         callback(nil, err)
         return
@@ -388,10 +448,17 @@ local function create_agent_pane(cwd, label, callback)
         resource_id = resource and (resource.tab_id or resource.workspace_id) or nil,
       })
     end)
-  end)
+  end, machine)
 end
 
-local function launch_agent(kind, name, cwd, agent_args, callback)
+local function as_destination(destination)
+  if type(destination) == "string" then
+    return { cwd = destination }
+  end
+  return destination
+end
+
+local function launch_agent(kind, name, destination, agent_args, callback)
   if not config.get().agents[kind] then
     callback(nil, { kind = "config", message = "unknown agent kind: " .. tostring(kind) })
     return
@@ -401,7 +468,9 @@ local function launch_agent(kind, name, cwd, agent_args, callback)
     callback(nil, name_err)
     return
   end
-  create_agent_pane(cwd, name, function(allocation, pane_err)
+  destination = as_destination(destination)
+  local machine = destination.machine
+  create_agent_pane(destination, name, function(allocation, pane_err)
     if pane_err then
       callback(nil, pane_err)
       return
@@ -424,7 +493,7 @@ local function launch_agent(kind, name, cwd, agent_args, callback)
     end
     local retry_index = 1
     local function start_in_allocated_pane()
-      run_json(args, { timeout_ms = start_timeout + 5000 }, function(result, err)
+      run_json(args, { timeout_ms = start_timeout + 5000, machine = machine }, function(result, err)
         local retryable = err and (err.code == "agent_pane_busy" or err.api_code == "agent_pane_busy")
         if retryable and retry_index <= #agent_shell_retry_ms then
           local delay = agent_shell_retry_ms[retry_index]
@@ -446,7 +515,7 @@ local function launch_agent(kind, name, cwd, agent_args, callback)
         end
         local started_agent
         if type(result.agent) == "table" then
-          started_agent = normalize_agent(result.agent, 1)
+          started_agent = normalize_agent(result.agent, 1, machine)
         end
         callback(result, nil, allocation, started_agent)
       end)
@@ -455,12 +524,12 @@ local function launch_agent(kind, name, cwd, agent_args, callback)
   end)
 end
 
-function M.start_agent(kind, name, cwd, callback)
+function M.start_agent(kind, name, destination, callback)
   local preset = config.get().agents[kind]
-  launch_agent(kind, name, cwd, vim.deepcopy((preset and preset.args) or {}), callback)
+  launch_agent(kind, name, destination, vim.deepcopy((preset and preset.args) or {}), callback)
 end
 
-function M.resume_agent(kind, name, cwd, callback)
+function M.resume_agent(kind, name, destination, callback)
   local resume_args = {
     claude = { "--resume" },
     codex = { "resume" },
@@ -472,32 +541,34 @@ function M.resume_agent(kind, name, cwd, callback)
   local preset = config.get().agents[kind]
   local agent_args = vim.deepcopy((preset and preset.args) or {})
   vim.list_extend(agent_args, resume_args[kind])
-  launch_agent(kind, name, cwd, agent_args, callback)
+  launch_agent(kind, name, destination, agent_args, callback)
 end
 
-function M.prompt(target, text, callback)
-  run_json({ "agent", "prompt", target, text }, callback)
+-- Agent commands take Herdr's pane target plus the agent's optional machine.
+function M.prompt(target, text, callback, machine)
+  run_json({ "agent", "prompt", target, text }, { machine = machine }, callback)
 end
 
-function M.prompt_until_working(target, text, callback)
+function M.prompt_until_working(target, text, callback, machine)
   run_json(
     { "agent", "prompt", target, text, "--wait", "--until", "working", "--timeout", "6000" },
-    { timeout_ms = 8000 },
+    -- Forwarding adds SSH setup before Herdr's own six-second wait starts.
+    { timeout_ms = machine and 12000 or 8000, machine = machine },
     callback
   )
 end
 
-function M.rename(target, name, callback)
+function M.rename(target, name, callback, machine)
   local _, name_err = M.validate_agent_name(name)
   if name_err then
     callback(nil, name_err)
     return
   end
-  run_json({ "agent", "rename", target, name }, callback)
+  run_json({ "agent", "rename", target, name }, { machine = machine }, callback)
 end
 
-function M.explain(target, callback)
-  run({ "agent", "explain", target, "--format", "text" }, {}, function(result, err)
+function M.explain(target, callback, machine)
+  run({ "agent", "explain", target, "--format", "text" }, { machine = machine }, function(result, err)
     if err then
       callback(nil, err)
       return
@@ -506,7 +577,7 @@ function M.explain(target, callback)
   end)
 end
 
-function M.read(target, lines, callback)
+function M.read(target, lines, callback, machine)
   local function finish(result, err)
     if err then
       callback(nil, err)
@@ -517,10 +588,10 @@ function M.read(target, lines, callback)
 
   run(
     { "agent", "read", target, "--source", "recent-unwrapped", "--lines", tostring(lines), "--format", "text" },
-    {},
+    { machine = machine },
     function(result, err)
       if err and (err.code == "agent_not_idle" or err.api_code == "agent_not_idle") then
-        run({ "agent", "read", target, "--source", "visible", "--format", "text" }, {}, finish)
+        run({ "agent", "read", target, "--source", "visible", "--format", "text" }, { machine = machine }, finish)
         return
       end
       finish(result, err)
@@ -583,6 +654,59 @@ function M.attach(target, takeover, opts)
   end
   if type(job_id) ~= "number" or job_id <= 0 then
     return nil, { kind = "process", message = "failed to start Herdr attach terminal" }
+  end
+  return job_id
+end
+
+-- Machine profiles are local client state, so this command is never forwarded.
+function M.machine_profile(machine, callback)
+  run_json_list({ "machine", "list", "--json" }, function(profiles, err)
+    if err then
+      callback(nil, err)
+      return
+    end
+    for _, profile in ipairs(profiles) do
+      if type(profile) == "table" and (profile.id == machine or profile.label == machine) then
+        if profile.enabled == false then
+          callback(nil, {
+            kind = "config",
+            message = string.format(
+              "saved Herdr machine %q is disabled; run: herdr machine enable %s",
+              machine,
+              machine
+            ),
+          })
+          return
+        end
+        if type(profile.target) ~= "string" or profile.target == "" then
+          break
+        end
+        callback(profile)
+        return
+      end
+    end
+    callback(nil, {
+      kind = "config",
+      message = string.format(
+        "saved Herdr machine %q was not found; check machines and run: herdr machine list",
+        machine
+      ),
+    })
+  end)
+end
+
+-- Herdr does not forward `agent attach`; open the machine's own session through Herdr's SSH client.
+function M.attach_machine(profile, opts)
+  local args = { "--remote", profile.target }
+  if type(profile.session) == "string" and profile.session ~= "" and profile.session ~= "default" then
+    vim.list_extend(args, { "--session", profile.session })
+  end
+  local ok, job_id = pcall(termopen or vim.fn.termopen, executable_argv(args), opts or {})
+  if not ok then
+    return nil, { kind = "process", message = tostring(job_id) }
+  end
+  if type(job_id) ~= "number" or job_id <= 0 then
+    return nil, { kind = "process", message = "failed to open the Herdr machine session" }
   end
   return job_id
 end

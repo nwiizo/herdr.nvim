@@ -159,7 +159,11 @@ end
 
 local function selected_id()
   local agent = selected_agent()
-  return agent and agent.terminal_id or nil
+  return agent and agent.key or nil
+end
+
+local function agent_label(agent)
+  return require("herdr.client").agent_label(agent)
 end
 
 local function set_lines(buffer, lines)
@@ -192,7 +196,7 @@ local function preview_title(agent, suffix_group)
     or "· read-only · P pause · e explain · i attach · ? guide "
   return {
     { " [2]-Preview ", "HerdrTitle" },
-    { "· " .. agent.name .. " ", highlight_for[agent.status] },
+    { "· " .. agent_label(agent) .. " ", highlight_for[agent.status] },
     { hint, suffix_group or "HerdrMuted" },
   }
 end
@@ -221,7 +225,8 @@ local function guide_content(width)
     {
       key = "<CR> / i",
       result = "Attach to type or answer approval/question UI."
-        .. (vim.env.HERDR_ENV == "1" and " Cross-Space attach moves Neovim first." or ""),
+        .. (vim.env.HERDR_ENV == "1" and " Cross-Space attach moves Neovim first." or "")
+        .. (#config.get().machines > 0 and " name@machine opens that machine's Herdr session." or ""),
     },
     { key = "p / s", result = "Send instruction; blocked agents need attach first." },
     { key = "e", result = "Show Herdr state evidence." },
@@ -314,8 +319,7 @@ function M.refresh_preview(opts)
     end
     return
   end
-  local target = agent.terminal_id
-  local cache_key = preview_mode .. ":" .. target
+  local cache_key = preview_mode .. ":" .. agent.key
   if paused_preview == cache_key then
     preview_target = cache_key
     preview_message(preview_cache[cache_key])
@@ -337,8 +341,8 @@ function M.refresh_preview(opts)
   local generation = preview_generation
   if changed then
     local cached = preview_cache[cache_key]
-    local pending = preview_mode == "explain" and string.format("Explaining %s state…", agent.name)
-      or string.format("Reading %s…", agent.name)
+    local pending = preview_mode == "explain" and string.format("Explaining %s state…", agent_label(agent))
+      or string.format("Reading %s…", agent_label(agent))
     preview_message(cached or { pending })
     set_title(preview_window, preview_title(agent))
   end
@@ -364,9 +368,9 @@ function M.refresh_preview(opts)
     set_title(preview_window, preview_title(agent))
   end
   if preview_mode == "explain" then
-    require("herdr.client").explain(agent.target, callback)
+    require("herdr.client").explain(agent.target, callback, agent.machine)
   else
-    require("herdr.client").read(agent.target, config.get().board.preview_lines, callback)
+    require("herdr.client").read(agent.target, config.get().board.preview_lines, callback, agent.machine)
   end
 end
 
@@ -402,6 +406,27 @@ local function empty_view_lines(stale)
   return { "No agents match this view.", "A: show all agents", "q: return to editing" }
 end
 
+-- Per-endpoint failures are listed only when saved machines are watched; a Local-only board
+-- keeps its single "Last refresh failed" line.
+local function endpoint_failure_lines(width)
+  local result = {}
+  for _, endpoint in ipairs(state.endpoints()) do
+    if endpoint.error then
+      local detail = endpoint.error.message or endpoint.error.kind or "refresh failed"
+      local outcome = endpoint.stale and "showing last view" or "unavailable"
+      table.insert(result, {
+        text = truncate(string.format("%s %s: %s", endpoint.machine or "Local", outcome, detail), width - 2),
+        group = endpoint.stale and "HerdrUnknown" or "HerdrBlocked",
+      })
+    end
+  end
+  return result
+end
+
+local function group_heading(group)
+  return group.machine and (group.machine .. " › " .. group.label) or group.label
+end
+
 function M.render(preferred_id)
   if not valid_buffer(list_buffer) then
     return
@@ -425,7 +450,18 @@ function M.render(preferred_id)
       highlights[#lines] = "HerdrWorking"
     end
   else
-    if status.stale and status.error then
+    if #config.get().machines > 0 then
+      local failures = endpoint_failure_lines(width)
+      for _, failure in ipairs(failures) do
+        table.insert(lines, failure.text)
+        highlights[#lines] = failure.group
+      end
+      if #failures > 0 then
+        table.insert(lines, truncate("r: retry now   :HerdrHealth for details", width - 2))
+        highlights[#lines] = "HerdrMuted"
+        table.insert(lines, "")
+      end
+    elseif status.stale and status.error then
       table.insert(lines, truncate("Last refresh failed: " .. (status.error.message or status.error.kind), width - 2))
       table.insert(lines, "")
     end
@@ -434,12 +470,12 @@ function M.render(preferred_id)
       local visible = {}
       for _, group in ipairs(groups) do
         for _, agent in ipairs(group.agents) do
-          visible[agent.terminal_id] = true
+          visible[agent.key] = true
         end
       end
       local hidden_working = 0
       for _, agent in ipairs(state.agents()) do
-        if agent.status == "working" and not visible[agent.terminal_id] then
+        if agent.status == "working" and not visible[agent.key] then
           hidden_working = hidden_working + 1
         end
       end
@@ -449,12 +485,13 @@ function M.render(preferred_id)
       end
     end
     if #groups == 0 then
-      for _, line in ipairs(empty_view_lines(status.stale)) do
+      -- A failing machine is reported above; "last view" wording follows the Local session.
+      for _, line in ipairs(empty_view_lines(state.endpoints()[1].stale)) do
         table.insert(lines, truncate(line, width - 1))
       end
     end
     for _, group in ipairs(groups) do
-      table.insert(lines, truncate(group.label, width - 2))
+      table.insert(lines, truncate(group_heading(group), width - 2))
       highlights[#lines] = "HerdrWorkspace"
       for _, agent in ipairs(group.agents) do
         local marker = config.get().board.markers[agent.status]
@@ -480,7 +517,7 @@ function M.render(preferred_id)
     local target_line
     if selected then
       for line, agent in pairs(line_agents) do
-        if agent.terminal_id == selected then
+        if agent.key == selected then
           target_line = line
           break
         end
@@ -533,22 +570,37 @@ end
 local function attach_selected()
   local agent = require_agent_row()
   if agent then
-    require("herdr").attach(agent.terminal_id)
+    require("herdr").attach(agent.key)
   end
 end
 
 local function prompt_selected()
   local agent = require_agent_row()
   if agent then
-    require("herdr").prompt(agent.terminal_id)
+    require("herdr").prompt(agent.key)
   end
 end
 
 local function rename_selected()
   local agent = require_agent_row()
   if agent then
-    require("herdr").rename(agent.terminal_id)
+    require("herdr").rename(agent.key)
   end
+end
+
+-- Lazygit and Diffview run locally; a remote agent's cwd is a path on its own machine.
+local function open_repository_tool(action)
+  local agent = selected_agent()
+  if agent and agent.machine then
+    vim.notify(
+      string.format("%s works in a repository on %s; inspect it on that machine", agent_label(agent), agent.machine),
+      vim.log.levels.INFO,
+      { title = "Herdr" }
+    )
+    return
+  end
+  M.close()
+  require("herdr.actions")[action](agent, origin_root)
 end
 
 local function acknowledge_selected()
@@ -556,7 +608,7 @@ local function acknowledge_selected()
   if not agent then
     return
   end
-  if not state.acknowledge(agent.terminal_id) then
+  if not state.acknowledge(agent.key) then
     vim.notify("Select a completed agent with fresh state first", vim.log.levels.INFO, { title = "Herdr" })
     return
   end
@@ -578,7 +630,7 @@ local function toggle_preview_pause()
   if not agent then
     return
   end
-  local cache_key = "output:" .. agent.terminal_id
+  local cache_key = "output:" .. agent.key
   if help_visible or not valid_window(preview_window) or preview_mode ~= "output" or not preview_cache[cache_key] then
     vim.notify("Show the agent's output preview before pausing it", vim.log.levels.INFO, { title = "Herdr" })
     return
@@ -631,14 +683,10 @@ local function configure_buffer(buffer, filetype, name)
     require("herdr").resume(nil, { cwd = origin_root })
   end, "Resume conversation in Herdr")
   map("g", function()
-    local agent = selected_agent()
-    M.close()
-    require("herdr.actions").lazygit(agent, origin_root)
+    open_repository_tool("lazygit")
   end, "Open Lazygit")
   map("d", function()
-    local agent = selected_agent()
-    M.close()
-    require("herdr.actions").diffview(agent, origin_root)
+    open_repository_tool("diffview")
   end, "Open Diffview")
   map("v", function()
     preview_enabled = not preview_enabled
@@ -787,10 +835,11 @@ function M.open(opts)
     open_windows()
     state.set_board_visible(true)
   end
-  M.render(opts.terminal_id)
-  if opts.terminal_id and selected_id() ~= opts.terminal_id and state.agent(opts.terminal_id) then
+  local key = opts.key or opts.terminal_id
+  M.render(key)
+  if key and selected_id() ~= key and state.agent(key) then
     show_all = true
-    M.render(opts.terminal_id)
+    M.render(key)
   end
 end
 

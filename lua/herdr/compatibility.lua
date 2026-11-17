@@ -2,6 +2,8 @@ local M = {}
 
 M.minimum_herdr = { 0, 7, 5 }
 M.verified_herdr = { 0, 9, 5 }
+-- `herdr --machine` API forwarding arrived in 0.9.1 and must exist on both ends.
+M.machine_forwarding_herdr = { 0, 9, 1 }
 
 local function format(version)
   return table.concat(version, ".")
@@ -37,5 +39,6 @@ end
 
 M.minimum_herdr_string = format(M.minimum_herdr)
 M.verified_herdr_string = format(M.verified_herdr)
+M.machine_forwarding_herdr_string = format(M.machine_forwarding_herdr)
 
 return M

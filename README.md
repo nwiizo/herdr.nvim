@@ -6,7 +6,7 @@
 
 `herdr.nvim` is an attention-first Neovim control surface for persistent coding agents managed by [Herdr TUI](https://herdr.dev/tui/).
 
-It gives one operator a compact view of Herdr agents, highlights work that needs intervention, and provides explicit controls from Neovim.
+It gives one operator a compact view of Herdr agents, highlights work that needs intervention, and provides explicit controls from Neovim. Agents on saved Herdr SSH machines can join the same view.
 
 It connects to the TUI runtime through the `herdr` CLI. Herdr app and `herdr-core` (`hc`) use a separate runtime; they are not supported by this plugin. Keep `herdr_cmd` pointed at `herdr`.
 
@@ -46,6 +46,7 @@ That job shapes the product:
 - Conversation rehoming through the native Claude Code and Codex resume pickers
 - Direct attach in a native right-hand Neovim terminal
 - Cross-Space attach that moves Neovim's Herdr pane to the selected agent's Space
+- Opt-in attention across saved Herdr SSH machines, with `name@machine` targets and per-machine failure isolation
 - Prompt, file, visual selection, range, and LSP diagnostic context
 - Transient retry drafts when Herdr reports that an initial instruction stalled
 - Optional `Snacks.lazygit` and Diffview actions from the selected agent's cwd
@@ -55,7 +56,7 @@ That job shapes the product:
 ## Requirements
 
 - Neovim 0.10+
-- Herdr 0.7.5+
+- Herdr 0.7.5+ (0.9.1+ here and on each saved machine to watch [other machines](#agents-on-other-machines))
 - macOS or Linux
 - Codex CLI and/or Claude Code
 
@@ -148,9 +149,9 @@ Board mappings are buffer-local:
 | `1` / `2`    | Focus the numbered agent-list / right pane directly                                           |
 | `<Tab>`      | Move between the agent list and the right pane                                                |
 
-The default view keeps agents from the current Git root and also surfaces blocked or completed work elsewhere. When active work is filtered out, the second line shows `A: N working elsewhere`; press `A` to reveal the whole Herdr session.
+The default view keeps agents from the current Git root and also surfaces blocked or completed work elsewhere. When active work is filtered out, the second line shows `A: N working elsewhere`; press `A` to reveal every agent, including those on [watched machines](#agents-on-other-machines).
 
-Space groups are ordered by their most urgent visible agent: blocked, done, working, idle, then unknown. Equal-priority groups keep Herdr's order, and updates preserve the selected terminal.
+Space groups are ordered by their most urgent visible agent: blocked, done, working, idle, then unknown. Equal-priority groups keep Herdr's order, with Local before watched machines, and updates preserve the selected agent.
 
 Use `j` / `k` to move between agents without stopping on Space headings or blank rows. Movement stops at the first or last agent. `1` / `2` remain direct pane switches.
 
@@ -158,7 +159,7 @@ After reviewing a completed agent, press `x` from either pane to hide that compl
 
 An empty board distinguishes no agents, agents outside the current project, reviewed completions, and a failed refresh. It offers the relevant next action and `q` to return to editing. Reviewing all completions does not suggest starting another task.
 
-Before sending an instruction or editor context, herdr.nvim fetches a fresh snapshot and resolves the same terminal's current pane. If the agent disappears, its kind or registered name changes, or verification fails, nothing is sent. The instruction stays in a memory-only draft buffer; the notification gives a `:buffer N` command to recover it after closing the board. If submission itself fails, delivery may be uncertain: inspect the agent before explicitly retrying. Drafts are never replayed automatically or saved to disk, and are lost when Neovim exits.
+Before sending an instruction or editor context, herdr.nvim fetches a fresh snapshot from the agent's own machine and resolves the same terminal's current pane. If the agent disappears, its kind or registered name changes, or verification fails, nothing is sent. The instruction stays in a memory-only draft buffer; the notification gives a `:buffer N` command to recover it after closing the board. If submission itself fails, delivery may be uncertain: inspect the agent before explicitly retrying. Drafts are never replayed automatically or saved to disk, and are lost when Neovim exits.
 
 For a `blocked` agent, inspect its approval or question in the preview, then press `i` or `<CR>` to answer in its native terminal. Herdr rejects ordinary prompts to blocked agents without sending input. herdr.nvim checks for this before opening the instruction input and again before sending. If the agent becomes blocked while you write, your text remains in a draft and the notification identifies the attach command. A server-side `agent_blocked` rejection also means the instruction was not sent. See [Herdr's agent input rules](https://herdr.dev/tui/docs/agent-automation/#choose-the-control-surface).
 
@@ -173,6 +174,7 @@ Controls depend on the focused window and mode:
 | Agent / provider picker | Use the configured picker keys to select and confirm. | Use its cancel key. The verified LazyVim/Snacks picker closes with Esc; cancellation stops the action. |
 | Attached terminal, input mode | Type into the agent; Page Up / Page Down scroll Herdr history. Normal input returns to the bottom. | `<C-g>` or Herdr's `Ctrl-b`, then `q`, detaches and returns to the board. |
 | Attached terminal, Neovim Normal mode | Enter this mode with `<C-\><C-n>` to select and copy terminal text. | `i` resumes input; `<C-g>` returns to the board. |
+| Machine session terminal (remote agent) | That machine's full Herdr TUI; select the agent named in the notification with Herdr's own navigation. | `<C-g>` closes the session terminal and returns to the same agent on the board. |
 
 Input and picker bindings belong to your configured UI provider; herdr.nvim keeps them intact. The terminal modes and direct-attach keys follow the [Neovim terminal manual](https://neovim.io/doc/user/terminal/#terminal-input), [Herdr direct-attach guide](https://herdr.dev/tui/docs/agents/#attach-directly-to-an-agent), and [Snacks input defaults](https://github.com/folke/snacks.nvim/blob/main/docs/input.md). In terminal input mode, press `Ctrl-b` twice to send one literal Ctrl-b to the agent. Herdr's native detach returns automatically when its terminal is focused; a background attach client exiting does not interrupt the window you are using.
 
@@ -184,11 +186,11 @@ The right pane is deliberately a read-only, ephemeral view of recent output. Its
 
 To read or copy stable output, wait for the preview to load and press `P`. Its title changes to `paused`; use `2` to focus it, then scroll, select, and yank with normal Neovim keys. In-flight reads cannot replace the frozen text. Agent execution, status updates, and notifications continue. Press `P` again to fetch current output. The guide can be opened and closed without losing the frozen text; selecting another agent, switching to the state explanation, or closing the board resumes normal preview behavior. This creates no transcript file.
 
-If a refresh or server check fails temporarily, herdr.nvim keeps the last good snapshot marked stale and retries at the configured polling interval. Missing executables and incompatible protocols stop automatic retries; resolve the problem, then use `:HerdrRefresh`. With `auto_start_server = false`, retrying never starts the server.
+If a refresh or server check fails temporarily, herdr.nvim keeps the last good snapshot marked stale and retries at the configured polling interval. Missing executables and incompatible protocols stop automatic retries; resolve the problem, then use `:HerdrRefresh`. With `auto_start_server = false`, retrying never starts the server. A watched machine that fails is retried separately with a backoff, as described in [Agents on other machines](#agents-on-other-machines).
 
-When Neovim itself runs inside Herdr and the selected agent belongs to another Space, attach first moves the Herdr pane hosting Neovim into that Space and follows it. Herdr keeps the Neovim process running during the move. Neovim instances outside Herdr attach without moving a pane.
+When Neovim itself runs inside Herdr and the selected Local agent belongs to another Space, attach first moves the Herdr pane hosting Neovim into that Space and follows it. Herdr keeps the Neovim process running during the move. Neovim instances outside Herdr attach without moving a pane, and remote agents never move Neovim's pane.
 
-Use `<C-g>` (`Ctrl-g`) as the single herdr.nvim key. In a normal editor buffer it opens the board and starts Herdr on demand; in a herdr.nvim-attached terminal its buffer-local mapping takes priority, detaches the Neovim client, leaves the Herdr agent running, and returns to that same agent on the board. If the agent is outside the default filter, the board switches to all agents to reveal it. If it has disappeared, the board selects the first visible agent. A single control chord has no mapping timeout in which Codex or Claude Code can consume a partial sequence. The terminal key is configurable with `terminal.return_key`.
+Use `<C-g>` (`Ctrl-g`) as the single herdr.nvim key. In a normal editor buffer it opens the board and starts Herdr on demand; in a herdr.nvim-attached terminal or machine session its buffer-local mapping takes priority, detaches the Neovim client, leaves the Herdr agent running, and returns to that same agent on the board. If the agent is outside the default filter, the board switches to all agents to reveal it. If it has disappeared, the board selects the first visible agent. A single control chord has no mapping timeout in which Codex or Claude Code can consume a partial sequence. The terminal key is configurable with `terminal.return_key`.
 
 ## Commands
 
@@ -197,9 +199,9 @@ Use `<C-g>` (`Ctrl-g`) as the single herdr.nvim key. In a normal editor buffer i
 | `:Herdr`                         | Toggle the attention board                                                           |
 | `:HerdrRefresh`                  | Refresh Herdr state immediately                                                      |
 | `:HerdrUpdateAll`                | Live-handoff an outdated server, update configured integrations, and update manifests |
-| `:HerdrStart [codex\|claude]`    | Assign an unused project-based name, enter the first instruction, start, and attach     |
+| `:HerdrStart [codex\|claude]`    | Choose a destination if machines are watched, assign an unused project-based name, enter the first instruction, start, and attach |
 | `:HerdrResume [codex\|claude]`   | Open the provider's resume picker inside Herdr and attach                            |
-| `:HerdrAttach[!] [target]`       | Attach; `!` explicitly takes over another direct client                              |
+| `:HerdrAttach[!] [target]`       | Attach; `!` explicitly takes over another direct client of a Local agent             |
 | `:HerdrPrompt [target]`          | Prompt an agent                                                                      |
 | `:HerdrRename [target]`          | Give an agent a stable role name                                                     |
 | `:[range]HerdrPrompt [target]`   | Prompt with complete lines from a range                                              |
@@ -208,13 +210,67 @@ Use `<C-g>` (`Ctrl-g`) as the single herdr.nvim key. In a normal editor buffer i
 | `:HerdrSendDiagnostics [target]` | Send current-buffer LSP diagnostics                                                  |
 | `:HerdrHealth`                   | Run `:checkhealth herdr`                                                         |
 
-Targets accept stable terminal IDs, current pane IDs, or an unambiguous agent name.
+Targets accept stable terminal IDs, current pane IDs, or an unambiguous agent name. Add `@machine` to address an agent on a [watched machine](#agents-on-other-machines), for example `reviewer@workbox` or `w1:p2@workbox`. Without `@machine`, a target that exists on Local resolves there, matching the Herdr CLI without `--machine`; otherwise it must identify exactly one remote agent. Completion offers the stable form: the terminal ID for Local agents and `terminal_id@machine` for remote agents.
+
+## Agents on other machines
+
+Herdr 0.9.1 can save SSH machines (`herdr machine add`) and route API commands to them with `herdr --machine`. herdr.nvim can watch those machines in the same attention board, so work delegated to another host needs no separate view.
+
+### Set up
+
+Save the machine in Herdr first, then list it in `machines`:
+
+```lua
+require("herdr").setup({
+  machines = { "workbox" }, -- saved machine labels or profile IDs from `herdr machine list`
+})
+```
+
+Run `:checkhealth herdr` to confirm that each watched machine has an enabled profile, is reachable without prompting, and runs a compatible Herdr server. Health also lists saved machines that are not watched.
+
+Local remains the session Neovim inherits, and nothing changes until `machines` names at least one saved machine. Watched machines are polled in parallel with Local on the same cadence. Every snapshot is applied as it arrives, so a slow machine does not delay Local updates.
+
+### On the board
+
+A machine is one more source of attention, not a separate mode. Remote Spaces carry the machine name, and urgency ordering spans machines:
+
+```text
+╭───── [1]-Herdr  !1  *3  ✓1 ────────╮
+│ this project + attention elsewhere │
+│ A: 3 working elsewhere             │
+│ workbox › api                      │
+│ ! reviewer       claude  blocked   │
+│                                    │
+│ herdr.nvim                         │
+│ ✓ tests          codex   done      │
+╰────────────────────────────────────╯
+```
+
+The current-project filter compares local paths, so remote agents appear in the default view only when blocked or done. `A` shows all of them, and `A: N working elsewhere` counts remote work. Notifications, the preview title, and command targets name remote agents as `reviewer@workbox`.
+
+### Acting on a remote agent
+
+| Action | What happens |
+| --- | --- |
+| Preview, `e`, `n`, `p`, editor context | Runs on the agent's machine. The fresh pre-send check runs there too, so Local's server is not needed. |
+| `x` | Acknowledges that machine's completion; the same terminal ID on two machines never collides. |
+| `<CR>` / `i` | Herdr does not forward `agent attach`, so this opens the machine's Herdr session (`herdr --remote`) in the terminal split. A notification names the agent and pane to select there. One session terminal is reused per machine. If Herdr asks to restart the remote server, its default answer is No, and herdr.nvim never answers for you. |
+| `a` / `R` | Asks where to start: Local first, then existing Spaces on watched machines, with Spaces whose directory name matches the current project first. The new tab uses that Space's absolute directory, because Herdr does not expand `~` for remote workspace or tab creation. Create a Space in Herdr first to start in a new remote project. |
+| `g` / `d` | Declined: Lazygit and Diffview run locally and cannot open the remote repository. |
+
+Editor context sent to a remote agent uses paths relative to the buffer's Git root (`@lua/foo.lua`), because the remote machine cannot resolve this machine's absolute paths. Selections and diagnostics include their text. A file reference assumes that the remote checkout has the same file; your unsaved or unsynced local edits are not included.
+
+### When a machine fails
+
+A failing machine never blanks the board. Its agents keep their last view, a line such as `workbox showing last view: …` explains why, and Local keeps refreshing. Retries back off from 5 to 30 seconds so an unreachable host is not hammered; `r` or `:HerdrRefresh` retries immediately. Authentication needs your terminal: run `herdr machine reconnect workbox`.
+
+Herdr forwarding never starts, installs, or restarts a remote server, and never falls back to Local. A connection failure does not prove that a mutation was not applied, so herdr.nvim keeps a failed instruction as a draft and never resends it automatically. `:HerdrUpdateAll` maintains only Local because Herdr does not forward installation or integration commands; update each machine there.
 
 ## Rehome an existing conversation
 
 Use `R` on the board or `:HerdrResume codex` / `:HerdrResume claude` when a conversation that started outside Herdr should become persistent and observable. Exit the original Codex or Claude Code client first. herdr.nvim never kills it or attempts to move its live process.
 
-After confirmation, herdr.nvim creates a Herdr-managed pane, opens the provider's native resume picker, and attaches immediately. Select the exact saved conversation there; herdr.nvim deliberately does not choose the latest session because multiple conversations may share one repository. Current Herdr integrations then report the native session identity so Herdr can restore that conversation after a server restart.
+After confirmation, herdr.nvim creates a Herdr-managed pane, opens the provider's native resume picker, and attaches immediately. When machines are watched, it first asks where to resume; the provider's saved conversations come from that machine. Select the exact saved conversation there; herdr.nvim deliberately does not choose the latest session because multiple conversations may share one repository. Current Herdr integrations then report the native session identity so Herdr can restore that conversation after a server restart.
 
 `:checkhealth herdr` reads Herdr's active detection-manifest status without changing it. A missing check time or one older than seven days is a warning with the explicit `herdr server update-agent-manifests` recovery command; local overrides are reported separately because they intentionally shadow remote rules.
 
@@ -229,13 +285,15 @@ require("herdr").statusline()
 -- "Herdr !1 ✓1" or "" when there is nothing to handle
 ```
 
-It can be used from Incline, lualine, or another renderer after herdr.nvim is loaded. `~` marks last-known data after a refresh failure.
+It can be used from Incline, lualine, or another renderer after herdr.nvim is loaded. Counts include watched machines. `~` marks last-known data after a refresh failure on Local or any watched machine.
 
 ## Notifications
 
 herdr.nvim observes Herdr's semantic agent state and sends a Neovim notification once when an agent changes to `blocked` or `done`. It does not forward Herdr's own toast. The initial snapshot stays quiet, while `statusline()` and the board still expose existing attention.
 
-Blocked notifications are suppressed while the board is open or the matching live attached terminal is focused because the approval state is already visible. Completion notifications are always delivered through the current `vim.notify` provider, including while an attention surface is visible. Closing a surface alone does not replay a suppressed blocked event; if the agent leaves the attention state and later returns, the new transition can notify normally. An already delivered notification stays deduplicated for the same Herdr revision. Herdr's `[ui.toast]` delivery is configured independently; enabling both a Herdr desktop/terminal toast and herdr.nvim notifications intentionally produces two notification surfaces.
+`HerdrAgentStatusChanged` event data carries Herdr's `terminal_id`, the agent's `machine` (`nil` for Local), and its herdr.nvim `key` (`terminal_id`, or `terminal_id@machine` for a watched machine).
+
+Blocked notifications are suppressed while the board is open or the matching live attached terminal is focused because the approval state is already visible. Completion notifications are always delivered through the current `vim.notify` provider, including while an attention surface is visible. Closing a surface alone does not replay a suppressed blocked event; if the agent leaves the attention state and later returns, the new transition can notify normally. An already delivered notification stays deduplicated for the same agent and Herdr revision. Herdr's `[ui.toast]` delivery is configured independently; enabling both a Herdr desktop/terminal toast and herdr.nvim notifications intentionally produces two notification surfaces.
 
 ## Configuration
 
@@ -249,6 +307,9 @@ require("herdr").setup({
     codex = { args = {} },
     claude = { args = {} },
   },
+
+  -- Saved Herdr SSH machines to watch alongside Local (labels or profile IDs).
+  machines = {},
 
   refresh = {
     board_ms = 1000,
@@ -292,7 +353,8 @@ agents = {
 - Resume rehomes saved conversation state, not a running process; stop the original client before selecting its session.
 - Current-project filtering uses the Git root. Outside a Git worktree, herdr.nvim matches the exact working directory.
 - herdr.nvim currently refreshes snapshots on a short adaptive poll. Herdr socket events are the next transport milestone.
-- herdr.nvim observes one Herdr server selected by the CLI environment. Herdr 0.9's combined Local/SSH machine list is not aggregated into the board; switching machines in Herdr does not retarget herdr.nvim.
+- herdr.nvim observes the Herdr server selected by the CLI environment plus the saved machines listed in `machines`. Switching machines in Herdr's own UI does not retarget herdr.nvim, and `--current` never identifies a remote pane.
+- Remote attach opens the machine's whole Herdr session because Herdr does not forward single-agent attach; select the agent there.
 - Agent-to-Neovim MCP tools and native diff review are deliberately out of scope for v0.1.
 - Windows is not supported in v0.1.
 
@@ -309,7 +371,7 @@ make check
 ```
 
 Tests run in a clean headless Neovim and do not require a test framework plugin.
-They clear inherited Herdr pane context so running them inside Herdr cannot move your pane. See [verification and disposable TUI tests](docs/testing.md) for the real CLI and UI checks.
+They clear inherited Herdr pane context so running them inside Herdr cannot move your pane. See [verification and disposable tests](docs/testing.md) for the real CLI, UI, and saved-machine checks.
 
 ## License
 

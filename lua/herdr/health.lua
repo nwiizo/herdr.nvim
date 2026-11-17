@@ -11,22 +11,29 @@ local function json_optional(value)
   return value
 end
 
-local function run(argv)
+local function run(argv, timeout_ms)
   local ok, process = pcall(vim.system, argv, { text = true })
   if not ok then
     return false, "", tostring(process)
   end
-  local result = process:wait(3000)
+  local result = process:wait(timeout_ms or 3000)
   return result.code == 0, result.stdout or "", result.stderr or ""
 end
 
-local function supported_herdr_version(output)
+-- SSH checks include Herdr's 10-second connect timeout.
+local machine_check_timeout_ms = 15000
+
+local function version_at_least(output, minimum)
   local version = output:match("(%d+%.%d+%.%d+)")
   if not version then
     return false
   end
   local parsed = vim.version.parse(version)
-  return parsed ~= nil and vim.version.ge(parsed, compatibility.minimum_herdr)
+  return parsed ~= nil and vim.version.ge(parsed, minimum)
+end
+
+local function supported_herdr_version(output)
+  return version_at_least(output, compatibility.minimum_herdr)
 end
 
 local function newer_than_verified(output)
@@ -87,6 +94,110 @@ end
 
 function M._manifest_update_argv(command)
   return { command, "server", "update-agent-manifests" }
+end
+
+local function decode_list(output)
+  local ok, decoded = pcall(vim.json.decode, output or "")
+  if not ok or type(decoded) ~= "table" or not vim.islist(decoded) then
+    return nil
+  end
+  return decoded
+end
+
+-- Returns { [selector] = profile } for configured selectors (label or ID), plus unwatched profiles.
+function M._match_machine_profiles(output, machines)
+  local profiles = decode_list(output)
+  if not profiles then
+    return nil, "Herdr returned an invalid saved machine list"
+  end
+  local matched, watched_ids, unwatched = {}, {}, {}
+  for _, selector in ipairs(machines) do
+    for _, profile in ipairs(profiles) do
+      if type(profile) == "table" and (profile.id == selector or profile.label == selector) then
+        matched[selector] = profile
+        watched_ids[profile.id] = true
+      end
+    end
+  end
+  for _, profile in ipairs(profiles) do
+    if type(profile) == "table" and profile.enabled ~= false and not watched_ids[profile.id] then
+      table.insert(unwatched, tostring(profile.label or profile.id))
+    end
+  end
+  return matched, unwatched
+end
+
+function M._parse_machine_status(output)
+  local entries = decode_list(output)
+  local entry = entries and entries[1]
+  if type(entry) ~= "table" or type(entry.status) ~= "string" then
+    return nil, "Herdr returned an invalid machine status"
+  end
+  return { status = entry.status, error = json_optional(entry.error) }
+end
+
+local function check_machines(command, machines, version_line)
+  if #machines == 0 then
+    return
+  end
+  health.start("herdr.nvim saved machines")
+  if version_line and not version_at_least(version_line, compatibility.machine_forwarding_herdr) then
+    health.error(
+      "watching saved machines needs Herdr " .. compatibility.machine_forwarding_herdr_string .. " or newer here",
+      { "Update Herdr on this machine and on each saved machine" }
+    )
+    return
+  end
+  local ok, stdout, stderr = run({ command, "machine", "list", "--json" })
+  if not ok then
+    health.error("could not list saved Herdr machines: " .. stderr:gsub("%s+$", ""))
+    return
+  end
+  local matched, unwatched = M._match_machine_profiles(stdout, machines)
+  if not matched then
+    health.error(unwatched)
+    return
+  end
+  for _, selector in ipairs(machines) do
+    local profile = matched[selector]
+    if not profile then
+      health.error(selector .. " is not a saved Herdr machine", {
+        "Run: " .. command .. " machine list",
+        "Save it with: " .. command .. " machine add <ssh-target>",
+      })
+    elseif profile.enabled == false then
+      health.warn(selector .. " is disabled", { "Run: " .. command .. " machine enable " .. selector })
+    else
+      local status_ok, status_out, status_err =
+        run({ command, "machine", "status", selector, "--json" }, machine_check_timeout_ms)
+      local status = status_ok and M._parse_machine_status(status_out) or nil
+      if not status or status.status ~= "reachable" then
+        local detail = status and (status.error or status.status) or status_err:gsub("%s+$", "")
+        health.warn(string.format("%s is not reachable: %s", selector, detail), {
+          "Authenticate in a terminal: " .. command .. " machine reconnect " .. selector,
+        })
+      else
+        local server_ok, server_out, server_err =
+          run({ command, "--machine", selector, "status", "server" }, machine_check_timeout_ms)
+        local kind = server_ok and compatibility.parse_server_status(server_out) or nil
+        if kind == "compatible" then
+          health.ok(string.format("%s (%s) is reachable and its Herdr server is compatible", selector, profile.target))
+        elseif kind == "not_running" then
+          health.warn(selector .. " is reachable, but its Herdr server is not running", {
+            "Forwarding never starts a remote server; open it once with: " .. command .. " --remote " .. profile.target,
+          })
+        else
+          health.warn(
+            string.format("%s did not report a compatible Herdr server: %s", selector, server_err:gsub("%s+$", "")),
+            { "Update Herdr on " .. selector }
+          )
+        end
+      end
+    end
+  end
+  for _, label in ipairs(unwatched) do
+    health.info(string.format("Saved machine %s is not watched; add it to machines to show its agents", label))
+  end
 end
 
 function M._configured_agent_names(agents)
@@ -170,12 +281,13 @@ function M.check()
 
   local config = require("herdr.config").get()
   local herdr_path = vim.fn.exepath(config.herdr_cmd)
+  local version_line
   if herdr_path == "" then
     health.error("Herdr is not executable", { "Install Herdr TUI from https://herdr.dev/tui/" })
   else
     local ok, stdout, stderr = run({ config.herdr_cmd, "--version" })
     if ok then
-      local version_line = stdout:gsub("%s+$", "")
+      version_line = stdout:gsub("%s+$", "")
       if newer_than_verified(version_line) then
         health.warn(
           version_line
@@ -240,6 +352,7 @@ function M.check()
       end
     end
     check_agent_manifests(config.herdr_cmd, configured_agents)
+    check_machines(config.herdr_cmd, config.machines, version_line)
   end
 end
 

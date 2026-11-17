@@ -14,12 +14,13 @@ local function attention_is_visible(event)
   if ok and board.is_visible() then
     return true
   end
+  local agent_key = event.key or event.terminal_id
   local buffer = vim.api.nvim_get_current_buf()
-  if vim.b[buffer].herdr_terminal_id ~= event.terminal_id then
+  if vim.b[buffer].herdr_agent_key ~= agent_key then
     return false
   end
   local terminal_ok, terminal = pcall(require, "herdr.terminal")
-  return terminal_ok and terminal.is_attached(event.terminal_id, buffer)
+  return terminal_ok and terminal.is_attached(agent_key, buffer)
 end
 
 function M.on_transition(event)
@@ -28,7 +29,7 @@ function M.on_transition(event)
   end
   local revision = event.status == "done" and event.completion_seq ~= nil and ("completion:" .. event.completion_seq)
     or tostring(event.revision)
-  local key = table.concat({ event.terminal_id, event.status, revision }, ":")
+  local key = table.concat({ event.key or event.terminal_id, event.status, revision }, ":")
   if seen[key] then
     return
   end
@@ -36,7 +37,8 @@ function M.on_transition(event)
     return
   end
   seen[key] = true
-  local message = string.format("%s is %s", event.name or event.terminal_id, event.status)
+  local name = require("herdr.client").agent_label({ name = event.name or event.terminal_id, machine = event.machine })
+  local message = string.format("%s is %s", name, event.status)
   if event.title and event.title ~= "" then
     message = message .. ": " .. event.title
   end

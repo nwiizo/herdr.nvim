@@ -165,6 +165,7 @@ end)
 
 local function agent(id, name, status)
   return {
+    key = id,
     terminal_id = id,
     target = id .. ":pane",
     pane_id = id .. ":pane",
@@ -826,8 +827,8 @@ h.test("starting an agent collects an initial instruction and attaches its live 
       workspaces = { { workspace_id = "w1", label = "herdr.nvim" } },
     })
   end
-  client.start_agent = function(kind, name, cwd, callback)
-    started = { kind = kind, name = name, cwd = cwd }
+  client.start_agent = function(kind, name, destination, callback)
+    started = { kind = kind, name = name, destination = destination }
     callback({ type = "agent_started" }, nil, { pane_id = "w1:p2" }, agent("term_2", name, "idle"))
   end
   client.prompt_until_working = function(target, instruction, callback)
@@ -856,7 +857,7 @@ h.test("starting an agent collects an initial instruction and attaches its live 
   herdr.start("codex", { cwd = "/tmp/herdr.nvim" })
   h.eq(1, #prompts)
   h.eq("Initial instruction (empty to skip, cancel to abort): ", prompts[1].prompt)
-  h.eq({ kind = "codex", name = "codex-herdr-nvim-2", cwd = "/tmp/herdr.nvim" }, started)
+  h.eq({ kind = "codex", name = "codex-herdr-nvim-2", destination = { cwd = "/tmp/herdr.nvim" } }, started)
   h.eq({ target = "term_2:pane", instruction = "review the current diff" }, prompted)
   h.eq("term_2", attached.terminal_id)
   h.truthy(board_closed)
@@ -1056,8 +1057,8 @@ h.test("resuming an agent confirms handoff and attaches directly to its picker",
       workspaces = { { workspace_id = "w1", label = "herdr.nvim" } },
     })
   end
-  client.resume_agent = function(kind, name, cwd, callback)
-    resumed = { kind = kind, name = name, cwd = cwd }
+  client.resume_agent = function(kind, name, destination, callback)
+    resumed = { kind = kind, name = name, destination = destination }
     callback({ type = "agent_started" }, nil, { pane_id = "w1:p2" }, agent("term_2", name, "idle"))
   end
   terminal.attach = function(value)
@@ -1087,7 +1088,7 @@ h.test("resuming an agent confirms handoff and attaches directly to its picker",
   h.contains(selections[1].opts.prompt, "Stop the existing codex client")
   h.eq({ "Continue", "Cancel" }, selections[1].items)
   h.eq(0, #inputs)
-  h.eq({ kind = "codex", name = "codex-herdr-nvim-2", cwd = "/tmp/herdr.nvim" }, resumed)
+  h.eq({ kind = "codex", name = "codex-herdr-nvim-2", destination = { cwd = "/tmp/herdr.nvim" } }, resumed)
   h.eq("term_2", attached.terminal_id)
   h.truthy(board_closed)
   h.eq(2, refreshes)

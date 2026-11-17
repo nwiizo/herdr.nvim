@@ -12,6 +12,12 @@ The [2026-11-04 DevelopersIO comparison](https://dev.classmethod.jp/articles/reo
 
 The 2026-11-11 checks retain the 0.9.5 compatibility baseline. Native `make check` passed on Neovim 0.10.4 and 0.12.6; the real TUI smoke test is described in [testing.md](testing.md). The Linux Actions matrix was not reproduced locally because `act` is unavailable.
 
+## Saved-machine forwarding contract
+
+Watched machines (README "Agents on other machines") rely on `herdr --machine <label-or-id>`, added in Herdr 0.9.1. herdr.nvim forwards `api snapshot`, `workspace create`, `tab create`, `agent start`, `agent prompt` (including `--wait`), `agent read`, `agent explain`, `agent rename`, and `status server` (health only). It reads `machine list --json` and `machine status --json` locally. Interactive attach is not forwarded, so remote attach uses `herdr --remote <target>` with `--session` only for a named remote session. Herdr does not expand `~` for remote workspace or tab creation (observed with 0.9.5); remote starts use absolute paths from that machine's snapshot.
+
+Validated on 2026-11-17 with Herdr 0.9.5 on macOS arm64, using a disposable local server and a remote server reached through a test-only `ssh` (see [testing.md](testing.md)). Unit tests cover argv routing, identity, failure isolation, and UI routing. The machine smoke test and the actual LazyVim/Snacks/Noice configuration exercised the real forwarding paths. Neither test can cover real SSH authentication or a separate remote installation; `:checkhealth herdr` checks those on real saved machines. Re-check this contract in each release audit together with the commands above.
+
 ## Herdr 0.9.5 audit
 
 Validated on 2026-10-20 against [Herdr 0.9.5](https://github.com/herdrdev/herdr/releases/tag/v0.9.5), including the release notes from 0.9.1 through 0.9.5 and the source diff from 0.9.0 to tag `v0.9.5` (`2ecf19a92fc3a7fff75b6ce3655ef04f4625ec01`). This rolls the pending audits [#5](https://github.com/nwiizo/herdr.nvim/issues/5), [#9](https://github.com/nwiizo/herdr.nvim/issues/9), [#10](https://github.com/nwiizo/herdr.nvim/issues/10), and [#11](https://github.com/nwiizo/herdr.nvim/issues/11) forward to 0.9.5; intermediate binaries were not each run separately. The earlier 0.9.0 audit remains below.
@@ -92,7 +98,7 @@ For every new stable release:
 3. Run `make check`.
 4. Start a disposable Herdr server, workspace, and agent.
 5. Verify snapshot normalization, pane targeting, `agent prompt --wait`, recent/visible reads, `agent explain`, `agent rename`, and `server agent-manifests`.
-6. Verify idle/active preview, explain switching, rename race protection, board rendering, start, prompt-stall recovery, attach, manifest health, and cleanup behavior.
+6. Verify idle/active preview, explain switching, rename race protection, board rendering, start, prompt-stall recovery, attach, manifest health, and cleanup behavior. Run the saved-machine smoke test in [testing.md](testing.md) to check `--machine` forwarding and remote attach.
 7. Update the verified version in `lua/herdr/compatibility.lua`, `README.md`, this document, and `.github/workflows/monitor-herdr.yml`.
 8. Document shims or migrations here before closing the audit issue.
 
