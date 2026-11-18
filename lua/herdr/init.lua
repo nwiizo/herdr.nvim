@@ -42,6 +42,17 @@ local function notify_prompt_stalled(agent)
   )
 end
 
+-- Keeps unsent or unconfirmed text in a memory-only buffer; retrying stays explicit.
+local function keep_draft(text, err, attempted)
+  local buffer = vim.api.nvim_create_buf(true, true)
+  vim.bo[buffer].bufhidden = "hide"
+  vim.api.nvim_buf_set_name(buffer, "herdr://draft/" .. buffer)
+  vim.api.nvim_buf_set_lines(buffer, 0, -1, false, vim.split(text, "\n", { plain = true }))
+  local outcome = attempted and "delivery was not confirmed; inspect the agent before retrying"
+    or "instruction was not sent"
+  notify_error(message(err) .. "; " .. outcome .. ". Close Herdr, then :buffer " .. buffer .. " to recover the draft")
+end
+
 local function valid_instruction(text)
   if type(text) ~= "string" then
     notify_error("instruction must be a string")
@@ -89,9 +100,11 @@ local function with_agent_kind(kind, prompt, callback)
 end
 
 -- Targets are an agent key, or a terminal ID, pane ID, or name with an optional @machine.
--- Unqualified targets prefer Local, matching the Herdr CLI without --machine.
+-- Unqualified targets prefer Local, matching the Herdr CLI without --machine. They fall back
+-- to a remote agent only when Local's fresh snapshot shows that no Local agent matches.
 local function find_agent(target)
-  local agents = require("herdr.state").agents()
+  local state = require("herdr.state")
+  local agents = state.agents()
   for _, agent in ipairs(agents) do
     if target == agent.key then
       return agent
@@ -106,6 +119,19 @@ local function find_agent(target)
     if same_machine and identifies then
       table.insert(agent.machine and remote_matches or local_matches, agent)
     end
+  end
+  if machine == nil and #local_matches == 0 and #remote_matches > 0 and not state.endpoint(nil).fresh then
+    return nil,
+      string.format(
+        "cannot confirm that %q is not a Local agent while Local Herdr is unavailable; use %s",
+        target,
+        table.concat(
+          vim.tbl_map(function(agent)
+            return base .. "@" .. agent.machine
+          end, remote_matches),
+          " or "
+        )
+      )
   end
   local matches = #local_matches > 0 and local_matches or remote_matches
   if #matches == 1 then
@@ -304,13 +330,13 @@ local function space_cwd(snapshot, workspace)
   return nil
 end
 
--- Remote destinations are existing Spaces on watched machines: their absolute cwd comes from
--- that machine's snapshot, and Spaces for the same project name are listed first.
-local function start_destinations(snapshot, cwd)
+-- Remote destinations are existing Spaces on machines with a fresh snapshot: their absolute
+-- cwd comes from that machine, and Spaces for the same project name are listed first.
+local function start_destinations(snapshot, cwd, fresh_machines)
   local project = vim.fs.basename(cwd)
   local remote = {}
   for index, workspace in ipairs(snapshot and snapshot.workspaces or {}) do
-    local remote_cwd = workspace.machine and space_cwd(snapshot, workspace)
+    local remote_cwd = workspace.machine and fresh_machines[workspace.machine] and space_cwd(snapshot, workspace)
     if remote_cwd then
       table.insert(remote, {
         machine = workspace.machine,
@@ -354,13 +380,22 @@ local function with_destination(opts, prompt, callback)
     callback({ cwd = cwd })
     return
   end
-  require("herdr.state").ensure_snapshot(function(ok, snapshot)
-    local destinations = start_destinations(ok and snapshot or nil, cwd)
-    if #destinations == 1 then
-      callback(destinations[1])
-      return
+  -- With machines watched, always ask: a silent Local start could be the wrong host. Refresh
+  -- first so machines still loading are offered, and name any that cannot be offered.
+  local state = require("herdr.state")
+  state.refresh({ explicit = true }, function()
+    local unavailable, fresh_machines = {}, {}
+    for _, endpoint in ipairs(state.endpoints()) do
+      if endpoint.machine and endpoint.fresh then
+        fresh_machines[endpoint.machine] = true
+      elseif endpoint.machine then
+        table.insert(unavailable, endpoint.machine)
+      end
     end
-    vim.ui.select(destinations, { prompt = prompt, format_item = format_destination }, function(destination)
+    local title = #unavailable > 0 and string.format("%s (unavailable: %s)", prompt, table.concat(unavailable, ", "))
+      or prompt
+    local destinations = start_destinations(state.get().snapshot, cwd, fresh_machines)
+    vim.ui.select(destinations, { prompt = title, format_item = format_destination }, function(destination)
       if destination then
         callback(destination)
       end
@@ -528,11 +563,24 @@ function M.start(kind, opts)
                 instruction,
                 function(_, prompt_err)
                   if prompt_err then
+                    local blocked = has_api_code(prompt_err, "agent_blocked")
                     if has_api_code(prompt_err, "agent_prompt_stalled") and started_agent then
                       pending_instructions[started_agent.key] = instruction
                       notify_prompt_stalled(started_agent)
+                    elseif started_agent then
+                      -- A transport failure leaves delivery unknown; keep the text for an explicit retry.
+                      pending_instructions[started_agent.key] = instruction
+                      notify_error(
+                        string.format(
+                          "%s; %s. Select %s and press p to retry the saved instruction",
+                          message(prompt_err),
+                          blocked and "the initial instruction was not sent"
+                            or "delivery of the initial instruction was not confirmed; inspect the agent first",
+                          agent_label(started_agent)
+                        )
+                      )
                     else
-                      notify_error(prompt_err)
+                      keep_draft(instruction, prompt_err, not blocked)
                     end
                   elseif started_agent then
                     pending_instructions[started_agent.key] = nil
@@ -680,13 +728,7 @@ local function prompt_agent(agent, text, recovery)
     pending_instructions[agent.key] = text
   end
   local function retain_draft(err, attempted)
-    local buffer = vim.api.nvim_create_buf(true, true)
-    vim.bo[buffer].bufhidden = "hide"
-    vim.api.nvim_buf_set_name(buffer, "herdr://draft/" .. buffer)
-    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, vim.split(text, "\n", { plain = true }))
-    local outcome = attempted and "delivery was not confirmed; inspect the agent before retrying"
-      or "instruction was not sent"
-    notify_error(message(err) .. "; " .. outcome .. ". Close Herdr, then :buffer " .. buffer .. " to recover the draft")
+    keep_draft(text, err, attempted)
   end
   local client = require("herdr.client")
   local request_generation = lifecycle_generation
@@ -733,7 +775,10 @@ local function text_for(agent, texts)
   if type(texts) ~= "table" then
     return texts
   end
-  return agent.machine and texts.remote or texts.local_text
+  if agent.machine then
+    return texts.remote, texts.remote_error
+  end
+  return texts.local_text
 end
 
 local function prompt_text(target, texts)
@@ -741,7 +786,12 @@ local function prompt_text(target, texts)
     return
   end
   with_target(target, function(agent)
-    prompt_agent(agent, text_for(agent, texts))
+    local text, err = text_for(agent, texts)
+    if not text then
+      notify_error(err)
+      return
+    end
+    prompt_agent(agent, text)
   end)
 end
 
@@ -753,16 +803,17 @@ local function concrete_buffer(bufnr)
 end
 
 -- Local agents get absolute paths. An agent on another machine cannot resolve this machine's
--- absolute paths, so it gets paths relative to the buffer's project root.
+-- absolute paths, so it gets project-relative paths, and a file reference that cannot be made
+-- relative is refused for remote agents.
 local function send_frozen_context(target, builder)
-  local local_text, err = builder(false)
+  local local_text, err = builder({ target_cwd = false })
   if not local_text then
     local level = err == "buffer has no diagnostics" and vim.log.levels.INFO or vim.log.levels.ERROR
     vim.notify(err, level, { title = "Herdr" })
     return
   end
-  local remote_text = builder(nil)
-  prompt_text(target, { local_text = local_text, remote = remote_text or local_text })
+  local remote_text, remote_error = builder({ project_relative = true })
+  prompt_text(target, { local_text = local_text, remote = remote_text, remote_error = remote_error })
 end
 
 function M.prompt(target, text)
@@ -786,32 +837,32 @@ end
 function M._send_range(target, bufnr, line1, line2)
   ensure_setup()
   local captured_buffer = concrete_buffer(bufnr)
-  send_frozen_context(target, function(target_cwd)
-    return require("herdr.context").range(captured_buffer, line1, line2, { target_cwd = target_cwd })
+  send_frozen_context(target, function(path_opts)
+    return require("herdr.context").range(captured_buffer, line1, line2, path_opts)
   end)
 end
 
 function M._send_visual(target, bufnr, line1, line2)
   ensure_setup()
   local captured_buffer = concrete_buffer(bufnr)
-  send_frozen_context(target, function(target_cwd)
-    return require("herdr.context").range_from_marks(captured_buffer, line1, line2, { target_cwd = target_cwd })
+  send_frozen_context(target, function(path_opts)
+    return require("herdr.context").range_from_marks(captured_buffer, line1, line2, path_opts)
   end)
 end
 
 function M._send_file(target, bufnr)
   ensure_setup()
   local captured_buffer = concrete_buffer(bufnr)
-  send_frozen_context(target, function(target_cwd)
-    return require("herdr.context").file(captured_buffer, { target_cwd = target_cwd })
+  send_frozen_context(target, function(path_opts)
+    return require("herdr.context").file(captured_buffer, path_opts)
   end)
 end
 
 function M._send_diagnostics(target, bufnr)
   ensure_setup()
   local captured_buffer = concrete_buffer(bufnr)
-  send_frozen_context(target, function(target_cwd)
-    return require("herdr.context").diagnostics(captured_buffer, { target_cwd = target_cwd })
+  send_frozen_context(target, function(path_opts)
+    return require("herdr.context").diagnostics(captured_buffer, path_opts)
   end)
 end
 

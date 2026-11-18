@@ -71,6 +71,32 @@ local function lines_of(buffer)
   return table.concat(vim.api.nvim_buf_get_lines(buffer, 0, -1, false), "\n")
 end
 
+-- Runs :checkhealth herdr's checks and returns the reported lines with their advice.
+local function health_report()
+  local lines = {}
+  local original = vim.health
+  local function record(level)
+    return function(message, advice)
+      table.insert(lines, level .. ": " .. message .. " " .. table.concat(advice or {}, " | "))
+    end
+  end
+  vim.health = {
+    start = record("start"),
+    ok = record("ok"),
+    warn = record("warn"),
+    error = record("error"),
+    info = record("info"),
+  }
+  package.loaded["herdr.health"] = nil
+  local ok, err = pcall(function()
+    require("herdr.health").check()
+  end)
+  vim.health = original
+  package.loaded["herdr.health"] = nil
+  assert(ok, err)
+  return table.concat(lines, "\n")
+end
+
 local function run()
   local notices = {}
   vim.notify = function(message)
@@ -110,6 +136,8 @@ local function run()
   if local_pane == remote_pane then
     assert(herdr._find_agent(local_pane).key == local_agent.key, "an unqualified pane ID prefers Local")
   end
+  local reachable = health_report()
+  assert(reachable:find("ok: " .. machine .. " (fake-mac) is reachable", 1, true), "health: reachable\n" .. reachable)
 
   -- A blocked remote agent notifies with its machine and rises above Local work.
   report(machine, remote_pane, "blocked", 2)
@@ -188,9 +216,25 @@ local function run()
   assert(state.agent(local_agent.key).status == "blocked", "Local updates while the machine is offline")
   local remote_endpoint = state.endpoints()[2]
   assert(remote_endpoint.error and remote_endpoint.stale, "offline machine keeps a stale view")
-  board.open()
+  local client = require("herdr.client")
+  local original_read, reads = client.read, 0
+  client.read = function(...)
+    reads = reads + 1
+    return original_read(...)
+  end
+  board.open({ key = remote_agent.key })
   assert(lines_of(board._buffer()):find(machine .. " showing last view", 1, true), "board reports the machine")
+  board.refresh_preview({ force = true })
+  client.read = original_read
+  assert(reads == 0, "the preview does not read from an offline machine")
+  assert(lines_of(board._preview_buffer()):find("REMOTE_PREVIEW_MARK", 1, true), "the last output stays visible")
   board.close()
+  local unreachable = health_report()
+  assert(
+    unreachable:find("warn: " .. machine .. " is not reachable", 1, true)
+      and unreachable:find("machine reconnect " .. machine, 1, true),
+    "health: unreachable\n" .. unreachable
+  )
   vim.fn.delete(root .. "/offline")
   refresh({ retry = true })
   assert(state.endpoints()[2].error == nil, "explicit retry reconnects")

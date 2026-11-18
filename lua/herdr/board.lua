@@ -120,6 +120,11 @@ local function truncate(value, width)
   return result .. "…"
 end
 
+-- Buffer lines cannot contain newlines; Herdr and SSH errors can span several lines.
+local function one_line(value)
+  return (tostring(value or ""):gsub("%s+", " "))
+end
+
 local function pad(value, width)
   local result = truncate(value, width)
   return result .. string.rep(" ", math.max(0, width - vim.fn.strdisplaywidth(result)))
@@ -327,6 +332,19 @@ function M.refresh_preview(opts)
     return
   end
   paused_preview = nil
+  -- Reading from a failing machine would bypass its retry backoff; keep the last output instead.
+  local endpoint = agent.machine and state.endpoint(agent.machine)
+  if endpoint and endpoint.error then
+    preview_target = cache_key
+    preview_in_flight = nil
+    preview_message(preview_cache[cache_key] or {
+      string.format("%s is unavailable, so its output is not read.", agent.machine),
+      "",
+      "Press r to retry now; the preview resumes after the machine responds.",
+    })
+    set_title(preview_window, preview_title(agent, "HerdrUnknown"))
+    return
+  end
   local changed = preview_target ~= cache_key
   local now = vim.uv.now()
   local throttle_ms = math.max(500, config.get().refresh.board_ms)
@@ -354,7 +372,12 @@ function M.refresh_preview(opts)
     if err then
       if not preview_cache[cache_key] then
         local label = preview_mode == "explain" and "Explanation unavailable" or "Preview unavailable"
-        preview_message({ label, "", err.message or err.kind or tostring(err) })
+        local preview_lines = { label, "" }
+        vim.list_extend(
+          preview_lines,
+          vim.split(tostring(err.message or err.kind or err), "\n", { plain = true, trimempty = true })
+        )
+        preview_message(preview_lines)
       end
       set_title(preview_window, preview_title(agent, "HerdrUnknown"))
       return
@@ -412,7 +435,7 @@ local function endpoint_failure_lines(width)
   local result = {}
   for _, endpoint in ipairs(state.endpoints()) do
     if endpoint.error then
-      local detail = endpoint.error.message or endpoint.error.kind or "refresh failed"
+      local detail = one_line(endpoint.error.message or endpoint.error.kind or "refresh failed")
       local outcome = endpoint.stale and "showing last view" or "unavailable"
       table.insert(result, {
         text = truncate(string.format("%s %s: %s", endpoint.machine or "Local", outcome, detail), width - 2),
@@ -443,7 +466,7 @@ function M.render(preferred_id)
     if status.error then
       table.insert(lines, "Herdr unavailable")
       highlights[#lines] = "HerdrBlocked"
-      table.insert(lines, truncate(status.error.message or "unknown error", width - 2))
+      table.insert(lines, truncate(one_line(status.error.message or "unknown error"), width - 2))
       render_guidance(lines, status.error)
     else
       table.insert(lines, "Loading Herdr agents…")
@@ -462,7 +485,10 @@ function M.render(preferred_id)
         table.insert(lines, "")
       end
     elseif status.stale and status.error then
-      table.insert(lines, truncate("Last refresh failed: " .. (status.error.message or status.error.kind), width - 2))
+      table.insert(
+        lines,
+        truncate("Last refresh failed: " .. one_line(status.error.message or status.error.kind), width - 2)
+      )
       table.insert(lines, "")
     end
     local groups = state.grouped_agents({ root = origin_root, all = show_all })

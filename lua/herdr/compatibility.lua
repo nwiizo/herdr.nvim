@@ -4,6 +4,8 @@ M.minimum_herdr = { 0, 7, 5 }
 M.verified_herdr = { 0, 9, 5 }
 -- `herdr --machine` API forwarding arrived in 0.9.1 and must exist on both ends.
 M.machine_forwarding_herdr = { 0, 9, 1 }
+-- `herdr machine status` and `herdr machine reconnect` arrived in 0.9.2.
+M.machine_status_herdr = { 0, 9, 2 }
 
 local function format(version)
   return table.concat(version, ".")

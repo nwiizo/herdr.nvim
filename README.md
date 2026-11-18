@@ -178,7 +178,7 @@ Controls depend on the focused window and mode:
 
 Input and picker bindings belong to your configured UI provider; herdr.nvim keeps them intact. The terminal modes and direct-attach keys follow the [Neovim terminal manual](https://neovim.io/doc/user/terminal/#terminal-input), [Herdr direct-attach guide](https://herdr.dev/tui/docs/agents/#attach-directly-to-an-agent), and [Snacks input defaults](https://github.com/folke/snacks.nvim/blob/main/docs/input.md). In terminal input mode, press `Ctrl-b` twice to send one literal Ctrl-b to the agent. Herdr's native detach returns automatically when its terminal is focused; a background attach client exiting does not interrupt the window you are using.
 
-Codex or Claude Code may show an update, trust, hook, login, or other setup screen before it can accept an instruction. herdr.nvim asks Herdr to confirm that the initial prompt made the agent start working. If Herdr reports `agent_prompt_stalled`, herdr.nvim warns immediately and keeps the instruction in memory. Clear the provider screen, return with `<C-g>`, select the agent, and press `p`; the original instruction is already filled in, so Enter retries it. The draft is discarded once work begins and is never written to disk.
+Codex or Claude Code may show an update, trust, hook, login, or other setup screen before it can accept an instruction. herdr.nvim asks Herdr to confirm that the initial prompt made the agent start working. If Herdr reports `agent_prompt_stalled`, herdr.nvim warns immediately and keeps the instruction in memory. Clear the provider screen, return with `<C-g>`, select the agent, and press `p`; the original instruction is already filled in, so Enter retries it. If submitting the first instruction fails for another reason, such as a lost SSH connection to a watched machine, herdr.nvim keeps it the same way; delivery is then unknown, so inspect the agent before retrying. The draft is discarded once work begins and is never written to disk.
 
 Herdr can still misclassify Codex setup screens. The repository trust screen reproduced this with Herdr 0.9.0 / Codex 0.153.4, and the initial hook-review screen did so with Herdr 0.9.5 / Codex 0.163.0. In that case, opening a setup menu may look like a successful working transition even though the instruction was not delivered, so no retry draft is available. Finish setup in the attached terminal and resend the instruction. herdr.nvim does not duplicate Herdr's provider-screen detection.
 
@@ -210,7 +210,7 @@ Use `<C-g>` (`Ctrl-g`) as the single herdr.nvim key. In a normal editor buffer i
 | `:HerdrSendDiagnostics [target]` | Send current-buffer LSP diagnostics                                                  |
 | `:HerdrHealth`                   | Run `:checkhealth herdr`                                                         |
 
-Targets accept stable terminal IDs, current pane IDs, or an unambiguous agent name. Add `@machine` to address an agent on a [watched machine](#agents-on-other-machines), for example `reviewer@workbox` or `w1:p2@workbox`. Without `@machine`, a target that exists on Local resolves there, matching the Herdr CLI without `--machine`; otherwise it must identify exactly one remote agent. Completion offers the stable form: the terminal ID for Local agents and `terminal_id@machine` for remote agents.
+Targets accept stable terminal IDs, current pane IDs, or an unambiguous agent name. Add `@machine` to address an agent on a [watched machine](#agents-on-other-machines), for example `reviewer@workbox` or `w1:p2@workbox`. Without `@machine`, a target that exists on Local resolves there, matching the Herdr CLI without `--machine`. It falls back to a remote agent only when Local's current snapshot shows no Local match and exactly one remote agent matches; while Local is unavailable, add `@machine`. Completion offers the stable form: the terminal ID for Local agents and `terminal_id@machine` for remote agents.
 
 ## Agents on other machines
 
@@ -226,9 +226,9 @@ require("herdr").setup({
 })
 ```
 
-Run `:checkhealth herdr` to confirm that each watched machine has an enabled profile, is reachable without prompting, and runs a compatible Herdr server. Health also lists saved machines that are not watched.
+List each saved machine once, by label or ID. Run `:checkhealth herdr` to confirm that each watched machine has an enabled profile, is reachable without prompting, and runs a compatible Herdr server. On Herdr 0.9.2 or newer, health uses `herdr machine status` to tell an SSH failure from a missing remote server. It also reports a machine listed twice and saved machines that are not watched.
 
-Local remains the session Neovim inherits, and nothing changes until `machines` names at least one saved machine. Watched machines are polled in parallel with Local on the same cadence. Every snapshot is applied as it arrives, so a slow machine does not delay Local updates.
+Local remains the session Neovim inherits, and nothing changes until `machines` names at least one saved machine. Each source refreshes independently on the same cadence, so a slow or failing machine never holds back the next Local poll.
 
 ### On the board
 
@@ -255,14 +255,14 @@ The current-project filter compares local paths, so remote agents appear in the 
 | Preview, `e`, `n`, `p`, editor context | Runs on the agent's machine. The fresh pre-send check runs there too, so Local's server is not needed. |
 | `x` | Acknowledges that machine's completion; the same terminal ID on two machines never collides. |
 | `<CR>` / `i` | Herdr does not forward `agent attach`, so this opens the machine's Herdr session (`herdr --remote`) in the terminal split. A notification names the agent and pane to select there. One session terminal is reused per machine. If Herdr asks to restart the remote server, its default answer is No, and herdr.nvim never answers for you. |
-| `a` / `R` | Asks where to start: Local first, then existing Spaces on watched machines, with Spaces whose directory name matches the current project first. The new tab uses that Space's absolute directory, because Herdr does not expand `~` for remote workspace or tab creation. Create a Space in Herdr first to start in a new remote project. |
+| `a` / `R` | Always asks where to start, even when only Local can be offered, and names machines that are unavailable. Local comes first, then existing Spaces on reachable watched machines, with Spaces whose directory name matches the current project first. The new tab uses that Space's absolute directory, because Herdr does not expand `~` for remote workspace or tab creation. Create a Space in Herdr first to start in a new remote project. |
 | `g` / `d` | Declined: Lazygit and Diffview run locally and cannot open the remote repository. |
 
-Editor context sent to a remote agent uses paths relative to the buffer's Git root (`@lua/foo.lua`), because the remote machine cannot resolve this machine's absolute paths. Selections and diagnostics include their text. A file reference assumes that the remote checkout has the same file; your unsaved or unsynced local edits are not included.
+Editor context sent to a remote agent uses paths relative to the buffer's Git root or Neovim's working directory (`@lua/foo.lua`), because the remote machine cannot resolve this machine's absolute paths. Selections and diagnostics include their text and fall back to the file name outside those directories. A file reference that cannot be made relative is refused. A file reference also assumes that the remote checkout has the same file; your unsaved or unsynced local edits are not included.
 
 ### When a machine fails
 
-A failing machine never blanks the board. Its agents keep their last view, a line such as `workbox showing last view: …` explains why, and Local keeps refreshing. Retries back off from 5 to 30 seconds so an unreachable host is not hammered; `r` or `:HerdrRefresh` retries immediately. Authentication needs your terminal: run `herdr machine reconnect workbox`.
+A failing machine never blanks the board. Its agents keep their last view, a line such as `workbox showing last view: …` explains why, and Local keeps refreshing. Retries back off from 5 to 30 seconds so an unreachable host is not hammered, and the preview keeps the agent's last output instead of reading from that machine; `r` or `:HerdrRefresh` retries immediately. A missing executable or incompatible protocol on Local stops only Local's automatic retries; watched machines keep polling. Authentication needs your terminal: run `herdr machine reconnect workbox`.
 
 Herdr forwarding never starts, installs, or restarts a remote server, and never falls back to Local. A connection failure does not prove that a mutation was not applied, so herdr.nvim keeps a failed instruction as a draft and never resends it automatically. `:HerdrUpdateAll` maintains only Local because Herdr does not forward installation or integration commands; update each machine there.
 

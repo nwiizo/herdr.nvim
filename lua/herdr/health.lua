@@ -104,27 +104,40 @@ local function decode_list(output)
   return decoded
 end
 
--- Returns { [selector] = profile } for configured selectors (label or ID), plus unwatched profiles.
+local function one_line(value)
+  return vim.trim((tostring(value or ""):gsub("%s+", " ")))
+end
+
+-- Returns { [selector] = profile } for configured selectors (label or ID), the enabled profiles
+-- that are not watched, and selector pairs that name the same profile (watched twice).
 function M._match_machine_profiles(output, machines)
   local profiles = decode_list(output)
   if not profiles then
     return nil, "Herdr returned an invalid saved machine list"
   end
-  local matched, watched_ids, unwatched = {}, {}, {}
+  local matched, selector_for_id, unwatched, aliases = {}, {}, {}, {}
   for _, selector in ipairs(machines) do
     for _, profile in ipairs(profiles) do
       if type(profile) == "table" and (profile.id == selector or profile.label == selector) then
         matched[selector] = profile
-        watched_ids[profile.id] = true
+        if selector_for_id[profile.id] then
+          table.insert(aliases, { selector_for_id[profile.id], selector })
+        else
+          selector_for_id[profile.id] = selector
+        end
       end
     end
   end
   for _, profile in ipairs(profiles) do
-    if type(profile) == "table" and profile.enabled ~= false and not watched_ids[profile.id] then
+    if type(profile) == "table" and profile.enabled ~= false and not selector_for_id[profile.id] then
       table.insert(unwatched, tostring(profile.label or profile.id))
     end
   end
-  return matched, unwatched
+  return matched, unwatched, aliases
+end
+
+function M._supports_machine_status(version_line)
+  return version_line ~= nil and version_at_least(version_line, compatibility.machine_status_herdr)
 end
 
 function M._parse_machine_status(output)
@@ -153,11 +166,21 @@ local function check_machines(command, machines, version_line)
     health.error("could not list saved Herdr machines: " .. stderr:gsub("%s+$", ""))
     return
   end
-  local matched, unwatched = M._match_machine_profiles(stdout, machines)
+  local matched, unwatched, aliases = M._match_machine_profiles(stdout, machines)
   if not matched then
     health.error(unwatched)
     return
   end
+  for _, alias in ipairs(aliases) do
+    health.error(
+      string.format("%s and %s name the same saved machine, so its agents appear twice", alias[1], alias[2]),
+      {
+        "List each saved machine once in machines",
+      }
+    )
+  end
+  local supports_status = M._supports_machine_status(version_line)
+  local start_server = "Forwarding never starts a remote server; open it once with: " .. command .. " --remote "
   for _, selector in ipairs(machines) do
     local profile = matched[selector]
     if not profile then
@@ -168,28 +191,39 @@ local function check_machines(command, machines, version_line)
     elseif profile.enabled == false then
       health.warn(selector .. " is disabled", { "Run: " .. command .. " machine enable " .. selector })
     else
-      local status_ok, status_out, status_err =
-        run({ command, "machine", "status", selector, "--json" }, machine_check_timeout_ms)
-      local status = status_ok and M._parse_machine_status(status_out) or nil
-      if not status or status.status ~= "reachable" then
-        local detail = status and (status.error or status.status) or status_err:gsub("%s+$", "")
-        health.warn(string.format("%s is not reachable: %s", selector, detail), {
-          "Authenticate in a terminal: " .. command .. " machine reconnect " .. selector,
-        })
+      -- A forwarded ping checks SSH and the remote server in one non-interactive request (0.9.1+).
+      local server_ok, server_out, server_err =
+        run({ command, "--machine", selector, "status", "server" }, machine_check_timeout_ms)
+      local kind = server_ok and compatibility.parse_server_status(server_out) or nil
+      if kind == "compatible" then
+        health.ok(string.format("%s (%s) is reachable and its Herdr server is compatible", selector, profile.target))
+      elseif kind == "not_running" then
+        health.warn(
+          selector .. " is reachable, but its Herdr server is not running",
+          { start_server .. profile.target }
+        )
+      elseif server_ok then
+        health.warn(selector .. " did not report a compatible Herdr server", { "Update Herdr on " .. selector })
       else
-        local server_ok, server_out, server_err =
-          run({ command, "--machine", selector, "status", "server" }, machine_check_timeout_ms)
-        local kind = server_ok and compatibility.parse_server_status(server_out) or nil
-        if kind == "compatible" then
-          health.ok(string.format("%s (%s) is reachable and its Herdr server is compatible", selector, profile.target))
-        elseif kind == "not_running" then
-          health.warn(selector .. " is reachable, but its Herdr server is not running", {
-            "Forwarding never starts a remote server; open it once with: " .. command .. " --remote " .. profile.target,
-          })
-        else
+        -- `machine status` (0.9.2+) separates SSH failures from a missing or older remote server.
+        local status
+        if supports_status then
+          local status_ok, status_out =
+            run({ command, "machine", "status", selector, "--json" }, machine_check_timeout_ms)
+          status = status_ok and M._parse_machine_status(status_out) or nil
+        end
+        if status and status.status == "reachable" then
+          local failure = one_line(server_err)
           health.warn(
-            string.format("%s did not report a compatible Herdr server: %s", selector, server_err:gsub("%s+$", "")),
-            { "Update Herdr on " .. selector }
+            string.format("%s is reachable, but its forwarded Herdr request failed: %s", selector, failure),
+            { start_server .. profile.target, "Update Herdr on " .. selector .. " if it predates machine forwarding" }
+          )
+        else
+          local detail = status and (status.error or status.status) or one_line(server_err)
+          health.warn(
+            string.format("%s is not reachable: %s", selector, detail),
+            supports_status and { "Authenticate in a terminal: " .. command .. " machine reconnect " .. selector }
+              or { "Check SSH access to " .. profile.target .. ", then run :checkhealth herdr again" }
           )
         end
       end

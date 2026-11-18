@@ -4,16 +4,18 @@ local config = require("herdr.config")
 local M = {}
 
 -- Endpoint key for the Herdr session inherited by Neovim. Saved machines use their selector.
+-- Each endpoint refreshes independently: { machine, snapshot, stale, error, in_flight,
+-- stopped (Local terminal failure), retry_at/backoff_ms (machine failures), waiters }.
 local LOCAL = ""
 local endpoints = {}
 local endpoint_order = {}
 local current
 local by_key = {}
 local acknowledged = {}
-local in_flight = false
 local board_visible = false
 local polling = false
 local timer
+local timer_running = false
 local generation = 0
 local failure_notifications = {}
 local snapshot_waiters = {}
@@ -71,6 +73,7 @@ local function stop_timer()
   if timer and not timer:is_closing() then
     timer:stop()
   end
+  timer_running = false
 end
 
 local function restart_timer()
@@ -89,6 +92,14 @@ local function restart_timer()
       M.refresh()
     end)
   )
+  timer_running = true
+end
+
+-- The timer ticks on a fixed cadence; each tick refreshes only endpoints that are idle and due.
+local function ensure_timer()
+  if polling and not timer_running then
+    restart_timer()
+  end
 end
 
 local function counts(agents)
@@ -148,20 +159,43 @@ local function sync_endpoints()
   end
   local next_endpoints = {}
   for _, key in ipairs(wanted) do
-    next_endpoints[key] = endpoints[key] or { machine = key ~= LOCAL and key or nil, retry_at = 0, backoff_ms = 0 }
+    next_endpoints[key] = endpoints[key]
+      or { machine = key ~= LOCAL and key or nil, retry_at = 0, backoff_ms = 0, waiters = {} }
   end
   endpoints = next_endpoints
   endpoint_order = wanted
   rebuild_current()
 end
 
-local function any_stale()
+local function any_endpoint(predicate)
   for _, key in ipairs(endpoint_order) do
-    if endpoints[key].stale then
+    if predicate(endpoints[key]) then
       return true
     end
   end
   return false
+end
+
+local function any_stale()
+  return any_endpoint(function(endpoint)
+    return endpoint.stale
+  end)
+end
+
+local function any_in_flight()
+  return any_endpoint(function(endpoint)
+    return endpoint.in_flight
+  end)
+end
+
+-- Polling continues while any endpoint can still retry on its own.
+local function update_polling()
+  if not any_endpoint(function(endpoint)
+    return not endpoint.stopped
+  end) then
+    polling = false
+    stop_timer()
+  end
 end
 
 -- Snapshots from tests or older callers may omit machine identity; stamp it once here.
@@ -218,7 +252,7 @@ function M._accept(snapshot, machine)
   end
   endpoint.initialized = true
   emit_user("HerdrUpdated", { stale = any_stale(), counts = counts(current.agents) })
-  if not in_flight then
+  if not any_in_flight() then
     finish_snapshot_waiters(true, current)
   end
 end
@@ -237,10 +271,9 @@ function M._fail(err, opts, machine)
       math.min(machine_backoff_ms.maximum, math.max(machine_backoff_ms.initial, endpoint.backoff_ms * 2))
     endpoint.retry_at = now() + endpoint.backoff_ms
   elseif opts.stop then
-    polling = false
-    stop_timer()
-  elseif not in_flight then
-    restart_timer()
+    -- Missing executables and incompatible protocols wait for an explicit refresh; machines keep polling.
+    endpoint.stopped = true
+    update_polling()
   end
   if not machine and err and err.kind == "executable" and not failure_notifications.executable then
     failure_notifications.executable = true
@@ -251,12 +284,22 @@ function M._fail(err, opts, machine)
     )
   end
   emit_user("HerdrUpdated", { stale = any_stale(), error = err, machine = machine })
-  if not in_flight then
+  if not any_in_flight() then
     finish_snapshot_waiters(false, err)
   end
 end
 
-local function fetch_local(request_generation, done)
+-- Waiters run after the endpoint leaves flight, so they observe its settled state.
+local function settle_endpoint(endpoint, ok, err)
+  endpoint.in_flight = false
+  local waiters = endpoint.waiters
+  endpoint.waiters = {}
+  for _, waiter in ipairs(waiters) do
+    waiter(ok, err)
+  end
+end
+
+local function fetch_local(endpoint, request_generation)
   client.ensure_server(function(ok, server_err)
     if request_generation ~= generation then
       return
@@ -264,7 +307,7 @@ local function fetch_local(request_generation, done)
     if not ok then
       local terminal = server_err and (server_err.kind == "executable" or server_err.kind == "protocol")
       M._fail(server_err, { stop = terminal })
-      done(false, server_err)
+      settle_endpoint(endpoint, false, server_err)
       return
     end
     client.snapshot(function(snapshot, err)
@@ -277,56 +320,59 @@ local function fetch_local(request_generation, done)
         end
         local terminal = err.kind == "executable" or err.kind == "protocol"
         M._fail(err, { stop = terminal })
-        done(false, err)
+        settle_endpoint(endpoint, false, err)
         return
       end
       M._accept(snapshot)
-      done(true)
+      settle_endpoint(endpoint, true)
     end)
   end)
 end
 
 -- Forwarding never starts a remote server, so a machine needs no ensure_server step.
-local function fetch_machine(machine, request_generation, done)
+local function fetch_machine(endpoint, request_generation)
   client.snapshot(function(snapshot, err)
     if request_generation ~= generation then
       return
     end
     if err then
-      M._fail(err, nil, machine)
-      done(false, err)
+      M._fail(err, nil, endpoint.machine)
+      settle_endpoint(endpoint, false, err)
       return
     end
-    M._accept(snapshot, machine)
-    done(true)
-  end, machine)
+    M._accept(snapshot, endpoint.machine)
+    settle_endpoint(endpoint, true)
+  end, endpoint.machine)
 end
 
--- One round refreshes every due endpoint in parallel. Each snapshot is applied on arrival;
--- callbacks and the next poll wait until the round settles.
+-- Starts every idle, due endpoint and joins endpoints already in flight. A slow machine
+-- therefore never blocks the next Local poll. The callback runs once all joined endpoints
+-- settle, succeeding when any of them produced a snapshot.
 function M.refresh(opts, callback)
   opts = opts or {}
   callback = callback or function() end
   sync_endpoints()
-  if in_flight then
-    callback(false, { kind = "busy", message = "snapshot refresh already in progress" })
-    return
-  end
   if opts.explicit then
     polling = true
+    endpoints[LOCAL].stopped = false
   end
-  in_flight = true
   local request_generation = generation
-  local due = {}
+  local joined, to_start = {}, {}
   for _, key in ipairs(endpoint_order) do
     local endpoint = endpoints[key]
-    if not endpoint.machine or opts.retry or now() >= endpoint.retry_at then
-      table.insert(due, endpoint)
+    local due = not endpoint.stopped and (not endpoint.machine or opts.retry or now() >= endpoint.retry_at)
+    if endpoint.in_flight then
+      table.insert(joined, endpoint)
+    elseif due then
+      table.insert(joined, endpoint)
+      table.insert(to_start, endpoint)
     end
   end
-  local pending = #due
-  local succeeded = false
-  local first_error
+  if #joined == 0 then
+    callback(false, endpoints[LOCAL].error or { kind = "idle", message = "no Herdr source is due for refresh" })
+    return
+  end
+  local pending, succeeded, first_error = #joined, false, nil
   local function settle(ok, err)
     if request_generation ~= generation then
       return
@@ -337,20 +383,22 @@ function M.refresh(opts, callback)
     if pending > 0 then
       return
     end
-    in_flight = false
     if succeeded then
       polling = true
     end
-    restart_timer()
-    local result = succeeded and current or first_error
-    callback(succeeded, result)
-    finish_snapshot_waiters(succeeded, result)
+    update_polling()
+    ensure_timer()
+    callback(succeeded, succeeded and current or first_error)
   end
-  for _, endpoint in ipairs(due) do
+  for _, endpoint in ipairs(joined) do
+    table.insert(endpoint.waiters, settle)
+  end
+  for _, endpoint in ipairs(to_start) do
+    endpoint.in_flight = true
     if endpoint.machine then
-      fetch_machine(endpoint.machine, request_generation, settle)
+      fetch_machine(endpoint, request_generation)
     else
-      fetch_local(request_generation, settle)
+      fetch_local(endpoint, request_generation)
     end
   end
 end
@@ -363,15 +411,18 @@ function M.start()
   M.refresh({ explicit = true })
 end
 
+-- Target resolution needs Local's current snapshot: without it, herdr.nvim cannot tell whether
+-- an unqualified name exists on Local, so a remote-only view is not enough.
 function M.ensure_snapshot(callback)
   sync_endpoints()
-  if current and not endpoints[LOCAL].stale then
+  local local_endpoint = endpoints[LOCAL]
+  if current and local_endpoint.snapshot and not local_endpoint.stale then
     callback(true, current)
     return
   end
   table.insert(snapshot_waiters, callback)
-  if not in_flight then
-    M.refresh({ explicit = true })
+  if #snapshot_waiters == 1 then
+    M.refresh({ explicit = true }, finish_snapshot_waiters)
   end
 end
 
@@ -394,25 +445,38 @@ function M.get()
     stale = any_stale(),
     error = last_error,
     initialized = initialized,
-    in_flight = in_flight,
+    in_flight = any_in_flight(),
     polling = polling,
   }
 end
 
--- Per-endpoint health for surfaces that show watched machines.
+local function endpoint_view(endpoint)
+  return {
+    machine = endpoint.machine,
+    loaded = endpoint.snapshot ~= nil,
+    -- A fresh view has a snapshot and no failure since it arrived.
+    fresh = endpoint.snapshot ~= nil and not endpoint.stale,
+    stale = endpoint.stale == true,
+    error = endpoint.error,
+    in_flight = endpoint.in_flight == true,
+  }
+end
+
+-- Per-endpoint health for surfaces that show watched machines; Local is always first.
 function M.endpoints()
   sync_endpoints()
   local result = {}
   for _, key in ipairs(endpoint_order) do
-    local endpoint = endpoints[key]
-    table.insert(result, {
-      machine = endpoint.machine,
-      loaded = endpoint.snapshot ~= nil,
-      stale = endpoint.stale == true,
-      error = endpoint.error,
-    })
+    table.insert(result, endpoint_view(endpoints[key]))
   end
   return result
+end
+
+-- Health of one endpoint: nil for Local, or a watched machine selector.
+function M.endpoint(machine)
+  sync_endpoints()
+  local endpoint = endpoints[machine or LOCAL]
+  return endpoint and endpoint_view(endpoint) or nil
 end
 
 function M.agents()
@@ -516,12 +580,17 @@ end
 function M.stop()
   generation = generation + 1
   polling = false
-  in_flight = false
+  -- Outstanding requests belong to the old generation; their callbacks are ignored.
+  for _, key in ipairs(endpoint_order) do
+    endpoints[key].in_flight = false
+    endpoints[key].waiters = {}
+  end
   if timer and not timer:is_closing() then
     timer:stop()
     timer:close()
   end
   timer = nil
+  timer_running = false
   finish_snapshot_waiters(false, { kind = "lifecycle", message = "Herdr state stopped before snapshot" })
 end
 
@@ -550,7 +619,6 @@ function M._reset()
   current = nil
   by_key = {}
   acknowledged = {}
-  in_flight = false
   board_visible = false
   polling = false
   failure_notifications = {}

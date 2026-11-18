@@ -29,6 +29,17 @@ function M.project_root(bufnr)
   return vim.fs.normalize(vim.fn.getcwd())
 end
 
+-- Paths a remote agent can resolve: relative to the buffer's project root or Neovim's cwd.
+local function project_relative_path(bufnr, path)
+  for _, root in ipairs({ M.project_root(bufnr), vim.fs.normalize(vim.fn.getcwd()) }) do
+    local prefix = root:sub(-1) == "/" and root or root .. "/"
+    if path:sub(1, #prefix) == prefix then
+      return path:sub(#prefix + 1)
+    end
+  end
+  return nil
+end
+
 local function relative_path(bufnr, path, target_cwd)
   if target_cwd == false then
     return path
@@ -47,6 +58,15 @@ local function relative_path(bufnr, path, target_cwd)
     return path:sub(#prefix + 1)
   end
   return path
+end
+
+-- With `project_relative`, an unresolvable path becomes the file name, or nil for a reference
+-- that would otherwise name an unreachable local path.
+local function context_path(bufnr, path, opts, reference)
+  if opts.project_relative then
+    return project_relative_path(bufnr, path) or (not reference and vim.fn.fnamemodify(path, ":t") or nil)
+  end
+  return relative_path(bufnr, path, opts.target_cwd)
 end
 
 local function check_size(text, line_count)
@@ -78,7 +98,11 @@ function M.file(bufnr, opts)
   if vim.bo[bufnr].modified then
     return nil, "buffer has unsaved changes; save it before sending a file reference"
   end
-  local text = string.format("Please inspect @%s in the current project.", relative_path(bufnr, path, opts.target_cwd))
+  local reference = context_path(bufnr, path, opts, true)
+  if not reference then
+    return nil, "file is outside the project and Neovim's working directory; a remote agent cannot resolve it"
+  end
+  local text = string.format("Please inspect @%s in the current project.", reference)
   return check_size(text, 1)
 end
 
@@ -148,7 +172,7 @@ function M.range(bufnr, line1, line2, opts)
   local filetype = vim.bo[bufnr].filetype
   local language = filetype ~= "" and filetype or "text"
   local text = table.concat({
-    string.format("Context from @%s (lines %d-%d):", relative_path(bufnr, path, opts.target_cwd), line1, line2),
+    string.format("Context from @%s (lines %d-%d):", context_path(bufnr, path, opts), line1, line2),
     fence .. language,
     selected,
     fence,
@@ -193,7 +217,7 @@ function M.diagnostics(bufnr, opts)
     return left.lnum < right.lnum
   end)
 
-  local lines = { string.format("Diagnostics for @%s:", relative_path(bufnr, path, opts.target_cwd)) }
+  local lines = { string.format("Diagnostics for @%s:", context_path(bufnr, path, opts)) }
   for _, diagnostic in ipairs(diagnostics) do
     local severity = severity_names[diagnostic.severity] or "UNKNOWN"
     local metadata = {}

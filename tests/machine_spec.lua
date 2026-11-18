@@ -545,46 +545,95 @@ h.test("attaching a remote agent opens its machine session instead of moving Neo
   h.contains(table.concat(notices, "\n"), "select reviewer (w1:p2)")
 end)
 
-h.test("starting with watched machines offers Local first, then matching remote Spaces", function()
-  reset()
+-- Drives start destinations through stubbed per-machine snapshots; `remote_ok = false` makes
+-- the machine fail during destination discovery.
+local function start_with_destinations(remote_ok)
   local herdr = setup_plugin({ machines = { "hdymac" }, auto_start_server = false })
   state._set_emit(function() end)
   state._set_transition_handler(function() end)
-  state._accept(normalized({}))
-  state._accept(
-    normalized(
-      {},
-      "hdymac",
-      { { workspace_id = "w1", label = "other" }, { workspace_id = "w2", label = "herdr.nvim" } },
-      {
-        { pane_id = "w1:p1", workspace_id = "w1", cwd = "/home/me/other" },
-        { pane_id = "w2:p1", workspace_id = "w2", cwd = "/home/me/herdr.nvim" },
-      }
-    ),
-    "hdymac"
-  )
-  local choices, started
-  local originals = { select = vim.ui.select, start = client.start_agent, input = vim.ui.input }
+  local picked, started = {}, nil
+  local originals = {
+    select = vim.ui.select,
+    start = client.start_agent,
+    ensure = client.ensure_server,
+    snapshot = client.snapshot,
+    notify = vim.notify,
+  }
   h.defer(function()
-    vim.ui.select, client.start_agent, vim.ui.input = originals.select, originals.start, originals.input
+    vim.ui.select, client.start_agent = originals.select, originals.start
+    client.ensure_server, client.snapshot, vim.notify = originals.ensure, originals.snapshot, originals.notify
   end)
+  client.ensure_server = function(callback)
+    callback(true)
+  end
+  client.snapshot = function(callback, machine)
+    if not machine then
+      callback(normalized({}))
+    elseif remote_ok then
+      callback(
+        normalized(
+          {},
+          machine,
+          { { workspace_id = "w1", label = "other" }, { workspace_id = "w2", label = "herdr.nvim" } },
+          {
+            { pane_id = "w1:p1", workspace_id = "w1", cwd = "/home/me/other" },
+            { pane_id = "w2:p1", workspace_id = "w2", cwd = "/home/me/herdr.nvim" },
+          }
+        )
+      )
+    else
+      callback(nil, { kind = "process", message = "remote SSH connection failed", machine = machine })
+    end
+  end
+  vim.notify = function() end
   vim.ui.select = function(items, opts, callback)
-    choices = vim.tbl_map(opts.format_item, items)
-    callback(items[2])
+    picked = { prompt = opts.prompt, choices = vim.tbl_map(opts.format_item, items) }
+    callback(items[#items > 1 and 2 or 1])
   end
   client.start_agent = function(kind, name, destination)
     started = { kind = kind, name = name, destination = destination }
   end
   herdr.start("codex", { cwd = "/tmp/work/herdr.nvim", instruction = "" })
-  h.contains(choices[1], "Local · herdr.nvim")
-  h.contains(choices[2], "hdymac › herdr.nvim  /home/me/herdr.nvim")
-  h.contains(choices[3], "hdymac › other")
+  return picked, started
+end
+
+h.test("starting with watched machines offers Local first, then matching remote Spaces", function()
+  reset()
+  local picked, started = start_with_destinations(true)
+  h.eq("Start agent where:", picked.prompt)
+  h.contains(picked.choices[1], "Local · herdr.nvim")
+  h.contains(picked.choices[2], "hdymac › herdr.nvim  /home/me/herdr.nvim")
+  h.contains(picked.choices[3], "hdymac › other")
   h.eq({ machine = "hdymac", workspace_id = "w2", cwd = "/home/me/herdr.nvim" }, {
     machine = started.destination.machine,
     workspace_id = started.destination.workspace_id,
     cwd = started.destination.cwd,
   })
   h.eq("codex-herdr-nvim", started.name)
+end)
+
+h.test("starting never silently picks Local while a watched machine is unavailable", function()
+  reset()
+  local picked, started = start_with_destinations(false)
+  h.eq(1, #picked.choices, "the picker is shown even with only Local to offer")
+  h.contains(picked.prompt, "unavailable: hdymac")
+  h.eq(nil, started.destination.machine)
+end)
+
+h.test("an unqualified target is not resolved remotely until Local's snapshot confirms it", function()
+  reset()
+  local herdr = setup_plugin({ machines = { "hdymac" }, auto_start_server = false })
+  state._set_emit(function() end)
+  state._set_transition_handler(function() end)
+  state._accept(normalized({ raw_agent({ name = "reviewer", agent_status = "idle" }) }, "hdymac"), "hdymac")
+  local found, err = herdr._find_agent("reviewer")
+  h.eq(nil, found, "Local has not reported yet, so it may still have a reviewer")
+  h.contains(err, "reviewer@hdymac")
+  h.eq("term_1@hdymac", herdr._find_agent("reviewer@hdymac").key)
+  state._accept(normalized({}))
+  h.eq("term_1@hdymac", herdr._find_agent("reviewer").key, "a fresh Local view without a match allows fallback")
+  state._fail({ kind = "process", message = "offline" })
+  h.eq(nil, (herdr._find_agent("reviewer")), "a stale Local view cannot confirm the absence")
 end)
 
 h.test("board labels remote Spaces, reports a failing machine, and keeps Git tools local", function()
@@ -658,4 +707,236 @@ h.test("health parses machine reachability without trusting malformed output", f
   local status, err = health._parse_machine_status("not json")
   h.eq(nil, status)
   h.contains(err, "invalid machine status")
+end)
+
+local function fake_timer_factory()
+  return function()
+    return {
+      is_closing = function()
+        return false
+      end,
+      start = function() end,
+      stop = function() end,
+      close = function() end,
+    }
+  end
+end
+
+local function stub(target, fields)
+  local originals = {}
+  for name, value in pairs(fields) do
+    originals[name] = target[name]
+    target[name] = value
+  end
+  h.defer(function()
+    for name, value in pairs(originals) do
+      target[name] = value
+    end
+  end)
+end
+
+h.test("a multiline machine error does not stop the board from rendering", function()
+  reset()
+  local board = require("herdr.board")
+  seed_two_machines()
+  -- A full-width list keeps the newline inside the visible text instead of truncating it away.
+  config.get().board.preview = false
+  state._fail({ kind = "process", message = "offline\nPermission denied" }, nil, "hdymac")
+  board.setup()
+  board.open()
+  h.contains(table.concat(vim.api.nvim_buf_get_lines(board._buffer(), 0, -1, false), "\n"), "hdymac showing last view")
+  board.close()
+end)
+
+h.test("a slow machine does not hold back the next Local poll", function()
+  reset()
+  config.setup({ machines = { "hdymac" } })
+  state._set_emit(function() end)
+  state._set_transition_handler(function() end)
+  state._set_timer_factory(fake_timer_factory())
+  local local_calls, remote_callbacks = 0, {}
+  stub(client, {
+    ensure_server = function(callback)
+      callback(true)
+    end,
+    snapshot = function(callback, machine)
+      if machine then
+        table.insert(remote_callbacks, callback)
+        return
+      end
+      local_calls = local_calls + 1
+      callback(normalized({ raw_agent({ agent_status = local_calls == 1 and "working" or "blocked" }) }))
+    end,
+  })
+  state.refresh({ explicit = true })
+  state.refresh()
+  h.eq(2, local_calls, "Local refreshes again while the machine is still in flight")
+  h.eq(1, #remote_callbacks, "the in-flight machine is not requested twice")
+  h.eq("blocked", state.agent("term_1").status)
+  remote_callbacks[1](normalized({}, "hdymac"))
+  h.eq(nil, state.endpoint("hdymac").error)
+  state.stop()
+end)
+
+h.test("a stopped Local server neither stops nor restarts machine polling", function()
+  reset()
+  config.setup({ machines = { "hdymac" } })
+  state._set_emit(function() end)
+  state._set_transition_handler(function() end)
+  state._set_timer_factory(fake_timer_factory())
+  local clock = 1000
+  state._set_clock(function()
+    return clock
+  end)
+  local ensure_calls, remote_ok = 0, false
+  stub(client, {
+    ensure_server = function(callback)
+      ensure_calls = ensure_calls + 1
+      callback(false, { kind = "protocol", message = "unsupported" })
+    end,
+    snapshot = function(callback, machine)
+      if remote_ok then
+        callback(normalized({}, machine))
+      else
+        callback(nil, { kind = "process", message = "offline", machine = machine })
+      end
+    end,
+  })
+  state.start()
+  h.eq(true, state.get().polling, "the machine keeps polling after Local stops")
+  clock = clock + 6000
+  remote_ok = true
+  state.refresh()
+  h.eq(1, ensure_calls, "Local waits for an explicit refresh after a protocol failure")
+  h.eq(nil, state.endpoint("hdymac").error, "the machine retried after its backoff")
+  state.refresh({ explicit = true })
+  h.eq(2, ensure_calls, "an explicit refresh retries Local")
+  state.stop()
+end)
+
+h.test("the preview does not read from a machine that is backing off", function()
+  reset()
+  local board = require("herdr.board")
+  seed_two_machines()
+  local reads = 0
+  stub(client, {
+    read = function(_, _, callback)
+      reads = reads + 1
+      callback("REMOTE OUTPUT")
+    end,
+  })
+  board.setup()
+  board.open({ key = "term_2@hdymac" })
+  board.refresh_preview({ force = true })
+  local before = reads
+  h.truthy(before > 0)
+  state._fail({ kind = "process", message = "offline" }, nil, "hdymac")
+  board.refresh_preview({ force = true })
+  h.eq(before, reads, "no SSH read while the machine is unavailable")
+  h.contains(table.concat(vim.api.nvim_buf_get_lines(board._preview_buffer(), 0, -1, false), "\n"), "REMOTE OUTPUT")
+  state._accept(normalized({ raw_agent({ terminal_id = "term_2", name = "reviewer" }) }, "hdymac"), "hdymac")
+  board.refresh_preview({ force = true })
+  h.eq(before + 1, reads, "reads resume after the machine recovers")
+  board.close()
+end)
+
+h.test("an unconfirmed initial instruction to a remote agent is kept for an explicit retry", function()
+  reset()
+  local herdr = setup_plugin({ machines = { "hdymac" }, auto_start_server = false })
+  state._set_emit(function() end)
+  state._set_transition_handler(function() end)
+  local notices = {}
+  stub(vim, {
+    notify = function(text)
+      table.insert(notices, text)
+    end,
+  })
+  stub(vim.ui, {
+    select = function(items, _, callback)
+      callback(items[2])
+    end,
+  })
+  stub(client, {
+    ensure_server = function(callback)
+      callback(true)
+    end,
+    snapshot = function(callback, machine)
+      if not machine then
+        callback(normalized({}))
+        return
+      end
+      callback(normalized({}, machine, { { workspace_id = "w2", label = "proj" } }, {
+        { pane_id = "w2:p1", workspace_id = "w2", cwd = "/home/me/proj" },
+      }))
+    end,
+    start_agent = function(_, name, destination, callback)
+      local started = normalized(
+        { raw_agent({ terminal_id = "term_9", pane_id = "w2:p2", name = name, agent_status = "idle" }) },
+        destination.machine
+      ).agents[1]
+      callback({ type = "agent_started" }, nil, { pane_id = "w2:p2" }, started)
+    end,
+    prompt_until_working = function(_, _, callback)
+      callback(nil, { kind = "process", message = "remote SSH connection failed", machine = "hdymac" })
+    end,
+    machine_profile = function(_, callback)
+      callback(nil, { kind = "config", message = "profile lookup skipped in test" })
+    end,
+  })
+  herdr.start("codex", { cwd = "/tmp/work/proj", instruction = "run the migration" })
+  h.eq("run the migration", herdr._pending_instruction("term_9@hdymac"))
+  local text = table.concat(notices, "\n")
+  h.contains(text, "delivery of the initial instruction was not confirmed")
+  h.contains(text, "codex-proj@hdymac and press p")
+end)
+
+h.test("a remote file reference outside the project is refused instead of sending a local path", function()
+  reset()
+  local herdr = require("herdr")
+  seed_two_machines()
+  local dir = vim.fn.tempname()
+  vim.fn.mkdir(dir, "p")
+  local file = dir .. "/notes.txt"
+  vim.fn.writefile({ "outside" }, file)
+  vim.cmd("edit " .. vim.fn.fnameescape(file))
+  local bufnr = vim.api.nvim_get_current_buf()
+  h.defer(function()
+    vim.api.nvim_buf_delete(bufnr, { force = true })
+    vim.fn.delete(dir, "rf")
+  end)
+  local sent, notices = {}, {}
+  stub(vim, {
+    notify = function(text)
+      table.insert(notices, text)
+    end,
+  })
+  stub(client, {
+    ensure_server = function(callback)
+      callback(true)
+    end,
+    snapshot = function(callback, machine)
+      callback(normalized({ raw_agent({ name = "api", agent_status = "idle" }) }, machine))
+    end,
+    prompt = function(_, text, callback, machine)
+      sent[machine or "local"] = text
+      callback({})
+    end,
+  })
+  herdr._send_file("api@hdymac", bufnr)
+  herdr._send_file("api", bufnr)
+  h.eq(nil, sent.hdymac)
+  h.contains(table.concat(notices, "\n"), "a remote agent cannot resolve it")
+  h.contains(sent["local"], "@/", "Local agents keep the absolute path")
+end)
+
+h.test("health probes forwarding before machine status and reports aliases", function()
+  local health = require("herdr.health")
+  h.eq(false, health._supports_machine_status("herdr 0.9.1"))
+  h.eq(true, health._supports_machine_status("herdr 0.9.2"))
+  h.eq(false, health._supports_machine_status(nil))
+  local list = vim.json.encode({
+    { id = "abc", label = "hdymac", target = "ssh://me@host", session = "default", enabled = true },
+  })
+  local _, _, aliases = health._match_machine_profiles(list, { "hdymac", "abc" })
+  h.eq({ { "hdymac", "abc" } }, aliases)
 end)
