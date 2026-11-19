@@ -39,13 +39,48 @@ local function focus_buffer(bufnr)
   return window
 end
 
+local function wipe_buffer(bufnr)
+  if vim.api.nvim_buf_is_valid(bufnr) then
+    vim.api.nvim_buf_delete(bufnr, { force = true })
+  end
+end
+
+-- Ends the session shown in `bufnr`. The buffer is wiped only after its job exits, because Neovim
+-- runs a job's exit callback after the PTY streams have flushed and closed. Wiping a terminal while a
+-- write to its PTY is pending (a focus report, or a reply to the TUI's color queries) makes Neovim
+-- re-queue the terminal teardown forever at full CPU (term_delayed_free in src/nvim/channel.c).
+local function stop_session(bufnr)
+  if not vim.api.nvim_buf_is_valid(bufnr) or vim.b[bufnr].herdr_stopping then
+    return
+  end
+  vim.b[bufnr].herdr_stopping = true
+  for record_key, record in pairs(terminals) do
+    if record.bufnr == bufnr then
+      terminals[record_key] = nil
+      pcall(jobstop, record.job_id)
+      return
+    end
+  end
+  -- No record means the job's exit callback already ran, so its PTY streams are closed.
+  vim.schedule(function()
+    wipe_buffer(bufnr)
+  end)
+end
+
+-- Exit callbacks call this first; a session stopped by Neovim only needs its buffer wiped.
+local function finish_stopped(bufnr)
+  if vim.api.nvim_buf_is_valid(bufnr) and vim.b[bufnr].herdr_stopping then
+    wipe_buffer(bufnr)
+    return true
+  end
+  return false
+end
+
 local function return_to_board(bufnr, agent_key)
+  stop_session(bufnr)
   local window = vim.api.nvim_get_current_win()
   if vim.api.nvim_win_get_buf(window) == bufnr and #vim.api.nvim_tabpage_list_wins(0) > 1 then
     vim.api.nvim_win_close(window, true)
-  end
-  if vim.api.nvim_buf_is_valid(bufnr) then
-    vim.api.nvim_buf_delete(bufnr, { force = true })
   end
   vim.schedule(function()
     require("herdr.board").open({ key = agent_key })
@@ -67,6 +102,14 @@ end
 
 local function track(record_key, bufnr, job_id, extra)
   terminals[record_key] = vim.tbl_extend("force", { bufnr = bufnr, job_id = job_id }, extra or {})
+  -- Closing the last window on a session ends it, however the window was closed.
+  vim.api.nvim_create_autocmd("BufHidden", {
+    buffer = bufnr,
+    once = true,
+    callback = function()
+      stop_session(bufnr)
+    end,
+  })
   vim.api.nvim_create_autocmd("BufWipeout", {
     buffer = bufnr,
     once = true,
@@ -109,7 +152,7 @@ function M.attach(agent, opts)
   end
 
   local _, bufnr = open_split()
-  vim.bo[bufnr].bufhidden = "wipe"
+  vim.bo[bufnr].bufhidden = "hide"
   vim.bo[bufnr].swapfile = false
   vim.b[bufnr].herdr_terminal_id = agent.terminal_id
   vim.b[bufnr].herdr_agent_key = agent_key
@@ -124,6 +167,9 @@ function M.attach(agent, opts)
     end,
     on_exit = function(_, code)
       vim.schedule(function()
+        if finish_stopped(bufnr) then
+          return
+        end
         local active = release(agent_key, bufnr)
         if active and code == 0 and vim.v.exiting == vim.NIL and vim.api.nvim_get_current_buf() == bufnr then
           return_to_board(bufnr, agent_key)
@@ -172,7 +218,7 @@ function M.attach_machine(agent, profile)
   end
 
   local _, bufnr = open_split()
-  vim.bo[bufnr].bufhidden = "wipe"
+  vim.bo[bufnr].bufhidden = "hide"
   vim.bo[bufnr].swapfile = false
   vim.b[bufnr].herdr_machine = agent.machine
   install_return_mapping(bufnr, function()
@@ -182,6 +228,9 @@ function M.attach_machine(agent, profile)
   local job_id, attach_err = client.attach_machine(profile, {
     on_exit = function(_, code)
       vim.schedule(function()
+        if finish_stopped(bufnr) then
+          return
+        end
         local record = terminals[record_key]
         local selected = record and record.agent_key or agent.key
         local active = release(record_key, bufnr)

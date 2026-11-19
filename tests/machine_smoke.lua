@@ -107,11 +107,14 @@ local function run()
       return notice:find(text, 1, true) ~= nil
     end)
   end
+  -- Herdr lists Spaces only in a wide pane; a narrow one shows just the focused Space.
+  vim.o.columns = 200
   herdr.setup({
     machines = { machine },
     auto_start_server = false,
     agents = { codex = { args = {} }, smoke = { args = {} } },
     refresh = { board_ms = 60000, background_ms = 60000 },
+    terminal = { width = 100 },
   })
   vim.cmd("runtime plugin/herdr.lua")
 
@@ -239,7 +242,8 @@ local function run()
   refresh({ retry = true })
   assert(state.endpoints()[2].error == nil, "explicit retry reconnects")
 
-  -- Attach opens the machine's Herdr session; the return key selects the same agent.
+  -- Attach opens the machine's Herdr session, which lists the remote "project" Space; the return
+  -- key selects the same agent and ends the session.
   herdr.attach(remote_agent.key)
   local session_buffer
   assert(
@@ -253,6 +257,7 @@ local function run()
       return false
     end, 100),
     "remote Herdr session rendered"
+      .. (session_buffer and (":\n" .. lines_of(session_buffer)) or " (no session buffer)")
   )
   assert(noticed("select remote-reviewer"), "attach explains where to select the agent")
   vim.api.nvim_set_current_buf(session_buffer)
@@ -265,6 +270,12 @@ local function run()
   )
   local line = vim.api.nvim_win_get_cursor(vim.fn.bufwinid(board._buffer()))[1]
   assert(board._line_agents()[line].key == remote_agent.key, "return selects the remote agent")
+  assert(
+    vim.wait(5000, function()
+      return not vim.api.nvim_buf_is_valid(session_buffer)
+    end, 20),
+    "the stopped session's buffer is wiped after its client exits"
+  )
   board.close()
   print(
     "MACHINE_SMOKE_OK: merged attention, qualified targets, remote preview/rename/prompt/start, "

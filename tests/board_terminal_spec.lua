@@ -928,8 +928,25 @@ h.test("attached terminals use a Neovim-owned chord to detach and return to the 
     agents = { agent("first", "blocked"), target },
     workspaces = { { workspace_id = "w1", label = "one" }, { workspace_id = "w2", label = "two" } },
   })
-  terminal._set_termopen(function(_, _)
+  local callbacks
+  local stopped = {}
+  local notices = {}
+  local original_notify = vim.notify
+  h.defer(function()
+    vim.notify = original_notify
+    board._reset()
+    terminal._reset()
+  end)
+  vim.notify = function(message)
+    table.insert(notices, message)
+  end
+  terminal._set_termopen(function(_, opts)
+    callbacks = opts
     return 23
+  end)
+  terminal._set_jobstop(function(job_id)
+    table.insert(stopped, job_id)
+    return 1
   end)
   local bufnr = terminal.attach(target, {})
   local normal_mapping
@@ -947,12 +964,74 @@ h.test("attached terminals use a Neovim-owned chord to detach and return to the 
   h.eq({}, normal_leader_mapping)
   h.eq({}, terminal_leader_mapping)
   terminal_mapping.callback()
-  h.truthy(vim.wait(1000, function()
-    return not vim.api.nvim_buf_is_valid(bufnr) and board.is_open()
-  end))
+  h.truthy(vim.wait(1000, board.is_open))
   h.eq(false, terminal.is_attached("term_1"))
   h.eq("term_1", selected_terminal())
   h.contains(vim.api.nvim_buf_get_lines(board._buffer(), 0, 1, false)[1], "all agents")
-  board._reset()
-  terminal._reset()
+  h.eq({ 23 }, stopped)
+  h.eq({}, vim.fn.win_findbuf(bufnr))
+  h.truthy(vim.api.nvim_buf_is_valid(bufnr), "the hidden buffer waits for its job to exit")
+  callbacks.on_exit(23, 129)
+  h.truthy(vim.wait(1000, function()
+    return not vim.api.nvim_buf_is_valid(bufnr)
+  end))
+  h.eq({}, notices, "a session stopped by the return key exits quietly")
+end)
+
+h.test("closing an attached terminal window stops its job and wipes the buffer after exit", function()
+  reset()
+  h.defer(terminal._reset)
+  local callbacks
+  local stopped = {}
+  terminal._set_termopen(function(_, opts)
+    callbacks = opts
+    return 31
+  end)
+  terminal._set_jobstop(function(job_id)
+    table.insert(stopped, job_id)
+    return 1
+  end)
+  local bufnr = terminal.attach(agent("term_1", "working"))
+  vim.cmd("close")
+  h.eq({ 31 }, stopped)
+  h.eq(false, terminal.is_attached("term_1"))
+  h.truthy(vim.api.nvim_buf_is_valid(bufnr))
+  callbacks.on_exit(31, 129)
+  h.truthy(vim.wait(1000, function()
+    return not vim.api.nvim_buf_is_valid(bufnr)
+  end))
+end)
+
+-- Neovim re-queues a wiped terminal's teardown forever while a write to its PTY is still pending
+-- (term_delayed_free in src/nvim/channel.c). A child Neovim turns that hang into a failure.
+h.test("returning from a live terminal with a pending PTY write keeps Neovim responsive", function()
+  local script = vim.fn.tempname() .. ".lua"
+  h.defer(function()
+    vim.fn.delete(script)
+  end)
+  vim.fn.writefile({
+    "local reopened = false",
+    'package.loaded["herdr.board"] = { open = function() reopened = true end }',
+    'require("herdr.config").setup({ terminal = { auto_insert = false } })',
+    'local terminal = require("herdr.terminal")',
+    "local job",
+    "terminal._set_termopen(function(_, opts)",
+    '  job = vim.fn.termopen({ "sh", "-c", "sleep 30" }, opts)',
+    "  return job",
+    "end)",
+    'local bufnr = terminal.attach({ key = "t1", terminal_id = "t1", target = "pane-t1", name = "t1" })',
+    "vim.wait(100)",
+    -- A focus report, as Neovim sends when leaving Terminal mode for a TUI with focus reporting.
+    'vim.api.nvim_chan_send(job, "\\27[O")',
+    'vim.fn.maparg("<C-g>", "t", false, true).callback()',
+    "local wiped = vim.wait(5000, function()",
+    "  return reopened and not vim.api.nvim_buf_is_valid(bufnr)",
+    "end, 10)",
+    'io.stdout:write(wiped and "TEARDOWN_OK" or "TEARDOWN_KEPT")',
+    'vim.cmd("qa!")',
+  }, script)
+  local result = vim
+    .system({ vim.v.progpath, "--headless", "--clean", "-u", "tests/minimal_init.lua", "-l", script }, { text = true })
+    :wait(15000)
+  h.eq("TEARDOWN_OK", result.stdout, "child Neovim exited with code " .. result.code .. ": " .. (result.stderr or ""))
 end)
